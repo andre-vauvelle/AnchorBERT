@@ -2,7 +2,9 @@
 .idea
 pheprob\ 2/
 results/
-src/__pycache_
 src/.env
 src/jobs/logs/
 
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
