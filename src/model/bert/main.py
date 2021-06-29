@@ -26,7 +26,7 @@ from tqdm import tqdm
 
 from model.bert.temperature import ModelWithTemperature, _ECELoss
 from omni.common import load_pickle
-from task.results.plot_calibration import plot_calibration
+from task.analysis.plot_calibration import plot_calibration
 
 
 class BERTAnchorModel(Bert.modeling.BertPreTrainedModel, pl.LightningModule):
