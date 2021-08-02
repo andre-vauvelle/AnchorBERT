@@ -55,7 +55,7 @@ write.csv(predictions, "{}")\'{}""".format(temp_input.name, temp_output.name, ve
         dataloader = DataLoader(dataset=dataset, batch_size=self.batch_size, shuffle=False,
                                 num_workers=self.num_workers)
         x = torch.zeros((len(dataset), dataset.max_len))
-        for i, batch in tqdm(enumerate(dataloader)):
+        for i, batch in tqdm(enumerate(dataloader), desc='binomial_r dataload'):
             token_idx, age_idx, position, segment, phecode_idx = batch
             if self.token_type == 'phecode':
                 x[i * dataloader.batch_size:(i + 1) * dataloader.batch_size] = phecode_idx

@@ -20,8 +20,8 @@
 # or the original data /SAN/icsbiobank/UKbiobank_ICS/Projects/GENIUS/GWAS/phenos/prev/prev_allcvd_logistic_tabdelim.txt
 PHENO_FILE="$1"
 
-# This the file name which will be used for the analysis
-# /SAN/ihibiobank/denaxaslab/andre/pheprob/analysis/gwas_results/"$OUTPUT_FILE"
+# This the file name which will be used for the results
+# /SAN/ihibiobank/denaxaslab/andre/pheprob/results/gwas_results/"$OUTPUT_FILE"
 OUTPUT_FILE=chr"$PHENO_FILE"_"$SGE_TASK_ID"
 
 # this is the chromosome you want to run the association test on

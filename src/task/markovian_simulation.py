@@ -14,7 +14,7 @@ from sacred.utils import apply_backspaces_and_linefeeds
 from data.datasets import SimulatedDataset
 from data.simulation.markovian import calculate_beta_gene, generate_data
 from definitions import DATA_DIR, MONGO_STR, MONGO_DB, RESULTS_DIR, MODEL_DIR
-from model.anchor_model import AnchorModel
+from model.logistic_regression import LogisticRegressionModel
 from model.bert.main import BERTAnchorModel
 from model.metrics import get_p_val, get_odds_ratio, get_power
 from model.thresholder import ThresholdModel
@@ -25,7 +25,7 @@ import torchmetrics
 base = os.path.basename(__file__)
 experiment_name = os.path.splitext(base)[0]
 ex = Experiment(experiment_name)
-ex.observers.append(MongoObserver(url=MONGO_STR, db_name=MONGO_DB))
+# ex.observers.append(MongoObserver(url=MONGO_STR, db_name=MONGO_DB))
 ex.captured_out_filter = apply_backspaces_and_linefeeds
 
 
@@ -33,7 +33,7 @@ ex.captured_out_filter = apply_backspaces_and_linefeeds
 def config():
     simulation_config = {
         'name': 'default',
-        'n': 100_000,
+        'n': 10_000,
         'trials': 1,
         'base_prevalence': 0.2,
         # 'min_seq': 5,
@@ -46,13 +46,7 @@ def config():
         'tv_split': 0.8  # train validation split
     }
     inverse_rank = False
-
-
-# if __name__ == '__main__':
-@ex.automain
-def run(simulation_config, inverse_rank):
-    store = []
-
+    logreg_config = {'C': 1}
     bert_config = {
         "optim_config": {
             # 'lr': 0.00478630092322638,
@@ -64,7 +58,7 @@ def run(simulation_config, inverse_rank):
             'epochs': 5,
             'batch_size': 256,
             'accumulate_grad_batches': 2,
-            'effective_batch_size': 256*2,
+            'effective_batch_size': 256 * 2,
             'gpus': -1 if torch.cuda.is_available() else 0,
             'auto_scale_batch_size': False,
             'auto_lr_find': False,
@@ -99,6 +93,12 @@ def run(simulation_config, inverse_rank):
         }
     }
 
+
+# if __name__ == '__main__':
+@ex.automain
+def run(simulation_config, inverse_rank, bert_config, logreg_config):
+    store = []
+
     token_idx_target = [3]
     estimators = [
         {'name': 'bert',
@@ -110,9 +110,9 @@ def run(simulation_config, inverse_rank):
          },
         {'name': 'binomial_r',
          'model': BinomialMixtureModelR(token=token_idx_target, token2idx=None, num_workers=0)},
-        {'name': 'anchor',
-         'model': AnchorModel(token=token_idx_target, token2idx=None, num_workers=0,
-                              emission_size=len(simulation_config['emission'][0]))},
+        {'name': 'logreg',
+         'model': LogisticRegressionModel(token=token_idx_target, token2idx=None, num_workers=0,
+                                          emission_size=len(simulation_config['emission'][0]), C=logreg_config['C'])},
         {'name': 'threshold1',
          'model': ThresholdModel(threshold=1, token=token_idx_target, token2idx=None, num_workers=0)},
         {'name': 'threshold2',
@@ -170,17 +170,21 @@ def run(simulation_config, inverse_rank):
             auroc = float(
                 torchmetrics.functional.auroc(preds=torch.Tensor(predictions), target=torch.Tensor(y_any).int(),
                                               average='macro', pos_label=1))
+            auprc = float(
+                torchmetrics.functional.auprc(preds=torch.Tensor(predictions), target=torch.Tensor(y_any).int()))
             p_val_est = get_p_val(predictions, G, inverse_rank=False, family=sm.families.Binomial())
             p_val_est_ir = get_p_val(predictions, G, inverse_rank=True, family=sm.families.Gaussian())
             store.append(
                 {'trail': trial_n, 'name': name, 'prevalence': prevalence_est,
                  'odds_ratio': get_odds_ratio(predictions, G),
                  'power': get_power(predictions_r, G), 'p_val': p_val_est, 'p_val_est_ir': p_val_est_ir,
-                 'auroc': auroc, 'average_y': average_y}, )
+                 'auroc': auroc, 'auprc': auprc, 'average_y': average_y},
+            )
 
     df = pd.DataFrame(store)
     results_path = os.path.join(RESULTS_DIR, 'simulation_results', simulation_config['name'] + '.csv')
     df.to_csv(results_path)
     ex.add_artifact(results_path)
+
 
     # # df.to_csv(os.path.join(DATA_DIR, 'processed', 'simulation', 'trails.csv'))

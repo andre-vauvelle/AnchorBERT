@@ -14,6 +14,5 @@ EXTERNAL_DATA_DIR = os.getenv("EXTERNAL_DATA_DIR")
 MODEL_DIR = os.getenv("MODEL_DIR")
 TENSORBOARD_DIR = os.getenv("TENSORBOARD_DIR")
 RESULTS_DIR = os.getenv("RESULTS_DIR")
-LOCAL_RESULTS_DIR = '/Users/andre/Documents/UCL/pheprob/results'
 MONGO_STR = "bigtop:27017"
 MONGO_DB = "experiments"

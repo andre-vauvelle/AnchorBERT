@@ -5,10 +5,10 @@ import torch
 from torch.utils.data import DataLoader
 
 from data.datasets import PheDataset
-from model.anchor_model import AnchorModel
+from model.logistic_regression import LogisticRegressionModel
 from model.bert.main import BERTAnchorModel
 from model.binomial_mixture_model_r import BinomialMixtureModelR
-from model.metrics import inverse_normal_rank
+from model.metrics import apply_inverse_normal_rank
 from model.thresholder import ThresholdModel
 from omni.common import load_pickle
 
@@ -39,29 +39,35 @@ ex.captured_out_filter = apply_backspaces_and_linefeeds
 
 # Dementias 290.1
 
+# MI 411.2
+
+# heart failure: 428.2
+
 SYMBOLS = ['PAD',
            'MASK',
            'SEP',
            'CLS',
            'UNK', ]
 
-# DEBUG = __debug__
-DEBUG = True
+DEBUG = __debug__
+# DEBUG = True
 
 N_WORKERS = 0 if DEBUG else os.cpu_count()
 
 
 @ex.config
 def config():
-    target_token = '250.2'
+    target_token = '714.0|714.1'
     global_params = {
         'use_code': 'code',  # 'phecode'
         'with_codes': 'all',
         'max_len_seq': 256,
-        'inverse_normal_rank_cols': []  # None to activate for all cols
+        'inverse_normal_rank_cols': ['logreg', 'bert', 'binomial_r', 'logreg_anchor', 'bert_anchor',
+                                     'binomial_r_anchor'],  # None to activate for all cols
+        'anchor_cols': ['logreg', 'bert', 'binomial_r', ]
     }
-
     file_config = {
+        'phenofile_name': target_token,
         'phe_vocab': os.path.join(DATA_DIR, 'processed', global_params['with_codes'], 'phecode_vocab.pkl'),
         # vocabulary idx2token, token2idx
         'code_vocab': os.path.join(DATA_DIR, 'processed', global_params['with_codes'], 'code_vocab.pkl'),
@@ -71,29 +77,28 @@ def config():
         'train_data': os.path.join(DATA_DIR, 'processed', global_params['with_codes'], 'MLM', 'phe_train.parquet'),
         'val_data': os.path.join(DATA_DIR, 'processed', global_params['with_codes'], 'MLM', 'phe_val.parquet'),
         # formatted data
-        'model_path': os.path.join(MODEL_DIR, global_params['with_codes'], global_params['use_code']),
-        # where to save model
     }
     bert_config = {
+        'pretrained': False,
+        'skip_training': False,
         "optim_config": {
             'lr': 1e-4,
             'warmup_proportion': 0.1,
             'weight_decay': 0.01
         },
         "train_params": {
-            'epochs': 5,
+            'epochs': 10,
             'batch_size': 64,
             'accumulate_grad_batches': 4,
             'effective_batch_size': 256,
             'gpus': -1 if torch.cuda.is_available() else 0,
             'auto_scale_batch_size': False,
             'auto_lr_find': False,
-            'val_check_interval': 0.2
+            'val_check_interval': 0.2,
+            'fast_dev_run': True if __debug__ else False
         },
         "model_config": {
-            # 'pretrained': os.path.join(MODEL_DIR, '60train_model_min_prop'),
-            # 'pretrained': None,
-            # if None then train from scratch
+            # if False then train from scratch, else look in os.path.join(MODEL_DIR, 'lightning')
             'vocab_size': len(load_pickle(file_config['phe_vocab'])['token2idx'].keys()),
             # number of disease + symbols for word embedding
             'seg_vocab_size': 2,  # number of vocab for seg embedding
@@ -111,6 +116,8 @@ def config():
             # The non-linear activation function in the encoder and the pooler "gelu", 'relu', 'swish' are supported
             'initializer_range': 0.02,  # parameter weight initializer range
         },
+        'bert_checkpoint_dir': os.path.join(MODEL_DIR, target_token),
+        'tensorboard_dir': os.path.join(MODEL_DIR, 'tensorboard', 'pheno_bert', target_token),
         "feature_dict": {
             'age': False,
             'seg': True,
@@ -118,9 +125,10 @@ def config():
             'word': True
         }
     }
+    logreg_config = {'C': 1}
 
 
-def save_phenofile(dataset, prediction_store, filename, inverse_normal_rank_cols=None):
+def save_phenofile(dataset, prediction_store, filename, anchor_cols=None, inverse_normal_rank_cols=None):
     """
     Saved file according to plink2 phenofile format https://www.cog-genomics.org/plink/2.0/input#pheno
     :param inverse_normal_rank_cols:
@@ -129,16 +137,19 @@ def save_phenofile(dataset, prediction_store, filename, inverse_normal_rank_cols
     :param filename: baseline_path without file extention
     :return:
     """
-    if inverse_normal_rank_cols is None:
-        inverse_normal_rank_cols = ['anchor', 'binomial_r', 'bert']
 
     pheno_columns = list(prediction_store.keys())
     prediction_store.update({'eid': dataset.eid.values})
     predictions_df = pd.DataFrame(prediction_store)
 
+    if anchor_cols is not None:
+        for col in anchor_cols:
+            predictions_df.loc[:, col + '_anchor'] = apply_anchor(predictions=predictions_df.loc[:, col],
+                                                                  y_anchor=predictions_df.loc[:, 'threshold1'])
+
     inverse_normal_rank_cols = [col for col in inverse_normal_rank_cols if col in predictions_df.columns]
     for col in inverse_normal_rank_cols:
-        predictions_df.loc[:, col] = inverse_normal_rank(predictions_df.loc[:, col])
+        predictions_df.loc[:, col + '_inr'] = apply_inverse_normal_rank(predictions_df.loc[:, col])
 
     bridge_file = os.path.join(DATA_DIR, 'external', 'ukb12113_ukb58356_bridgefile_tabdelim.txt')
     bridge = pd.read_csv(bridge_file, delimiter='\t')
@@ -149,6 +160,50 @@ def save_phenofile(dataset, prediction_store, filename, inverse_normal_rank_cols
     phenofile.columns = ['IID'] + pheno_columns
     phenofile.to_csv(filename, sep='\t', index=False)
     print("pheno file saved at: {}".format(filename))
+    return phenofile
+
+
+def update_phenofile(func, columns, phenofile=None, filename=None, new_filename=None, update_colnames='', drop_cols=True):
+    """
+    Update phenotypes with a function applied to a pandas series
+    :param func: Function that accepts pandas series
+    :param columns:
+    :param phenofile:
+    :param filename:
+    :param new_filename:
+    :param update_colnames:
+    :return:
+    """
+    if phenofile is None:
+        phenofile = pd.read_csv(filename, sep='\t')
+
+    if filename is None and phenofile is None:
+        raise ValueError("Please include either phenofile or filename")
+
+
+    for col in columns:
+        phenofile.loc[:, col + update_colnames] = func(phenofile.loc[:, col])
+
+    if drop_cols:
+        phenofile = phenofile.drop(columns=columns)
+
+
+    if new_filename is not None:
+        phenofile.to_csv(new_filename, sep='\t', index=False)
+    return phenofile
+
+
+def apply_anchor(predictions: pd.Series, y_anchor: pd.Series):
+    """Update controls with prediction probabilites, cases are set to 1"""
+    y_anchor_inv = (-1) * (y_anchor - 1)
+    predictions = y_anchor_inv * predictions  # updating controls
+    predictions = predictions + y_anchor  # setting cases to 1
+    return predictions
+
+def anchor_decorator(func, anchor):
+    def wrapper(predictions):
+        return func(predictions, anchor)
+    return wrapper
 
 
 def gen_covariates_file(filepath=os.path.join(DATA_DIR, 'processed', 'pheprob', 'covariates.tsv')):
@@ -184,8 +239,22 @@ def gen_covariates_file(filepath=os.path.join(DATA_DIR, 'processed', 'pheprob', 
         print("Covariates already saved at: {}".format(filepath))
 
 
+def apply_anchor_dict(prediction_store, names):
+    for name, data in prediction_store.items():
+        if name in names:
+            anchor_data = apply_anchor(data, prediction_store['threshold1'])
+            prediction_store.update({name + '_anchor': anchor_data})
+
+
+def apply_inverse_normal_rank_dict(prediction_store, names):
+    for name, data in prediction_store.items():
+        if name in names:
+            inr_data = apply_inverse_normal_rank(data)
+            prediction_store.update({name + '_inr': inr_data})
+
+
 @ex.automain
-def main(target_token, global_params, file_config, bert_config):
+def main(target_token, global_params, file_config, bert_config, logreg_config):
     code_vocab = load_pickle(file_config['code_vocab'])
     age_vocab = load_pickle(file_config['age_vocab'])
     phe_vocab = load_pickle(file_config['phe_vocab'])
@@ -204,24 +273,32 @@ def main(target_token, global_params, file_config, bert_config):
                              max_len=global_params['max_len_seq'],
                              phe2idx=phe_vocab['token2idx'])
 
+    if bert_config is None:
+        bert_model = None
+    else:
+        if bert_config['pretrained']:
+            bert_model = BERTAnchorModel.load_from_checkpoint(
+                token=target_token, token2idx=model_token2idx, bert_config=bert_config, file_config=file_config,
+                checkpoint_path=os.path.join(file_config['bert_checkpoint_dir'], file_config['bert_checkpoint_name']),
+                skip_training=bert_config['skip_training'], num_workers=N_WORKERS)
+        else:
+            bert_model = BERTAnchorModel(token=target_token, token2idx=model_token2idx,
+                                         bert_config=bert_config, file_config=file_config,
+                                         num_workers=N_WORKERS)
+    if logreg_config is None:
+        logreg_model = None
+    else:
+        logreg_model = LogisticRegressionModel(token=target_token, token2idx=model_token2idx, C=logreg_config['C'],
+                                               num_workers=N_WORKERS)
+
     estimators = [
         {'name': 'bert',
-         # 'model': BERTAnchorModel(token=target_token, token2idx=model_token2idx,
-         #                          bert_config=bert_config, file_config=file_config,
-         #                          num_workers=N_WORKERS,
-         #                          checkpoint_path=os.path.join(MODEL_DIR, 'lightning',
-         #                                                       'BERTAnchorModel_{}.ckpt'.format(target_token)))},
-         'model': BERTAnchorModel.load_from_checkpoint(
-             token=target_token, token2idx=model_token2idx, bert_config=bert_config, file_config=file_config,
-             checkpoint_path=os.path.join(MODEL_DIR, 'lightning', 'BERTAnchorModel_{}.ckpt'.format(target_token)),
-             do_training=False, num_workers=N_WORKERS)
-         },
+         'model': bert_model},
         {'name': 'binomial_r',
          'model': BinomialMixtureModelR(token=target_token, token2idx=model_token2idx,
                                         num_workers=N_WORKERS)},
-        {'name': 'anchor',
-         'model': AnchorModel(token=target_token, token2idx=model_token2idx,
-                              num_workers=N_WORKERS)},
+        {'name': 'logreg',
+         'model': logreg_model},
         {'name': 'threshold1',
          'model': ThresholdModel(threshold=1, token=target_token, token2idx=model_token2idx,
                                  num_workers=N_WORKERS)},
@@ -236,10 +313,24 @@ def main(target_token, global_params, file_config, bert_config):
     prediction_store = {}
     for e in estimators:
         model = e['model']
+        if model is None:
+            continue
         predictions = model.predict(train_dataset, val_dataset)
         prediction_store.update({e['name']: predictions.numpy()})
 
-    estimator_names = '_'.join([n['name'] for n in estimators])
-    save_phenofile(train_dataset, prediction_store,
-                   os.path.join(DATA_DIR, 'processed', 'pheprob', '{}_{}.tsv'.format(estimator_names, target_token)),
+    estimator_names = '_'.join([e['name'] for e in estimators if e['model'] is not None])
+
+    phenofile = save_phenofile(train_dataset, prediction_store,
+                   os.path.join(DATA_DIR, 'processed','pheprob', file_config['phenofile_name'] + '.tsv'),
+                   anchor_cols=global_params['anchor_cols'],
                    inverse_normal_rank_cols=global_params['inverse_normal_rank_cols'])
+
+    threshold1_anchor_func = anchor_decorator(apply_anchor, phenofile.threshold1)
+
+    phenofile = update_phenofile(threshold1_anchor_func, global_params['anchor_cols'], phenofile=phenofile,
+                                 new_filename=os.path.join(DATA_DIR, 'processed', 'pheprob', file_config['phenofile_name'] + '_anchor.tsv'),
+                                 update_colnames='_anchor', drop_cols=True)
+
+    update_phenofile(apply_inverse_normal_rank, global_params['inverse_normal_rank_cols'], phenofile=phenofile,
+                                 new_filename=os.path.join(DATA_DIR, 'processed', 'pheprob', file_config['phenofile_name'] + '_anchor_inr.tsv'),
+                                 update_colnames='_inr', drop_cols=True)

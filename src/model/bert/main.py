@@ -8,6 +8,7 @@ import pytorch_pretrained_bert as Bert
 from pytorch_lightning import Callback
 from pytorch_lightning.loggers import TensorBoardLogger
 from pytorch_lightning.tuner.tuning import Tuner
+from pytorch_lightning.callbacks import ModelCheckpoint
 from sklearn.preprocessing import MultiLabelBinarizer
 from torch import optim
 from torchmetrics import AveragePrecision, MetricCollection, AUROC
@@ -47,25 +48,29 @@ class BERTAnchorModel(Bert.modeling.BertPreTrainedModel, pl.LightningModule):
 
     """
 
-    def __init__(self, token, token2idx, bert_config, symbol_idxs=[0, 1], do_training=True,
+    def __init__(self, token, token2idx, bert_config, symbol_idxs=[0, 1], skip_training=False,
                  predict_proba=True, emission_size=5, num_workers=0, token_type='phecode',
-                 checkpoint_path=os.path.join(MODEL_DIR, 'lightning', 'BERTAnchorModel_sim.ckpt'),
                  file_config=None, max_len_seq=256, temperature_scaling=False,
                  verbose=False, ):
         config = BertConfig(bert_config['model_config'])
         super(BERTAnchorModel, self).__init__(config)
 
+
+        self.token = token
+        self.token2idx = token2idx
+        self.bert_config = bert_config
         self.model_config = bert_config['model_config']
         self.train_params = bert_config['train_params']
         self.optim_config = bert_config['optim_config']
         self.file_config = file_config
+        self.bert_checkpoint_dir = bert_config['bert_checkpoint_dir']
 
         self.lr = self.optim_config['lr']
         self.batch_size = self.train_params['batch_size']
         self.max_len_seq = max_len_seq
         self.temperature_scaling = temperature_scaling
 
-        self.do_training = do_training
+        self.skip_training = skip_training
         if token2idx is None:
             self.token_idxs = token
             num_labels = len(token)
@@ -93,10 +98,10 @@ class BERTAnchorModel(Bert.modeling.BertPreTrainedModel, pl.LightningModule):
         self.predict_proba = predict_proba
         self.loss_func = nn.BCEWithLogitsLoss()
 
-        self.tb_logger = TensorBoardLogger(os.path.join(TENSORBOARD_DIR, 'pheno_bert'))
-        self.checkpoint_path = checkpoint_path
+        self.tb_logger = TensorBoardLogger(bert_config['tensorboard_dir'])
 
-        metrics = MetricCollection([AveragePrecision(pos_label=1), AUROC(pos_label=1, compute_on_step=False)])
+        metrics = MetricCollection(
+            [AveragePrecision(pos_label=1, compute_on_step=False), AUROC(pos_label=1, compute_on_step=False)])
         self.train_metrics = metrics.clone(prefix='train_')
         self.valid_metrics = metrics.clone(prefix='val_')
 
@@ -127,12 +132,7 @@ class BERTAnchorModel(Bert.modeling.BertPreTrainedModel, pl.LightningModule):
         loss = self.loss_func(logits, y_anchor.float())
         predictions = f.sigmoid(logits)
         self.log('train_loss', loss)
-        self.train_metrics.update(predictions, y_anchor)
         return loss
-
-    def on_train_epoch_end(self, **kwargs) -> None:
-        output = self.train_metrics.compute()
-        self.log_dict(output, prog_bar=True, on_epoch=True)
 
     def validation_step(self, batch, batch_idx):
         logits, y_anchor = self(batch)
@@ -143,7 +143,8 @@ class BERTAnchorModel(Bert.modeling.BertPreTrainedModel, pl.LightningModule):
 
     def on_validation_epoch_end(self) -> None:
         output = self.valid_metrics.compute()
-        self.log_dict(output, prog_bar=True, on_epoch=True)
+        self.valid_metrics.reset()
+        self.log_dict(output, prog_bar=True)
 
     def predict_step(self, batch, batch_idx: int, dataloader_idx=None):
         logits, y_anchor = self(batch)
@@ -204,14 +205,19 @@ class BERTAnchorModel(Bert.modeling.BertPreTrainedModel, pl.LightningModule):
             train_dataset = dataset
             # dataset = ConcatDataset([train_dataset, val_dataset])
 
-        if self.do_training:
+        if not self.skip_training:
             train_dataloader = DataLoader(dataset=train_dataset, batch_size=self.train_params['batch_size'],
                                           shuffle=True,
                                           num_workers=self.num_workers)
             val_dataloader = DataLoader(dataset=val_dataset, batch_size=self.train_params['batch_size'], shuffle=False,
                                         num_workers=self.num_workers)
+            checkpoint_callback = ModelCheckpoint(dirpath=self.bert_checkpoint_dir,
+                                                  filename='{epoch}-{val_loss:.2f}-{val_AveragePrecision:.2f}-{val_AUROC:.2f}',
+                                                  monitor='val_loss')
             trainer = pl.Trainer(max_epochs=self.train_params['epochs'], check_val_every_n_epoch=1,
                                  val_check_interval=self.train_params['val_check_interval'],
+                                 checkpoint_callback=True,
+                                 callbacks=[checkpoint_callback, ],
                                  gpus=self.train_params['gpus'],
                                  accumulate_grad_batches=self.train_params['accumulate_grad_batches'],
                                  logger=self.tb_logger)
@@ -240,8 +246,10 @@ class BERTAnchorModel(Bert.modeling.BertPreTrainedModel, pl.LightningModule):
                 self.lr = new_lr
 
             trainer.fit(self, train_dataloader, val_dataloader)
-            trainer.save_checkpoint(filepath=self.checkpoint_path)
-            model = self
+           
+            model = BERTAnchorModel.load_from_checkpoint(
+                checkpoint_callback.best_model_path, token=self.token, token2idx=self.token2idx, bert_config=self.bert_config, file_config=self.file_config,
+                skip_training=self.bert_config['skip_training'], num_workers=self.num_workers)
 
         if self.temperature_scaling:
             val_dataloader = DataLoader(dataset=val_dataset, batch_size=self.train_params['batch_size'], shuffle=False,
@@ -255,12 +263,12 @@ class BERTAnchorModel(Bert.modeling.BertPreTrainedModel, pl.LightningModule):
         results = prediction_trainer.predict(model, prediction_dataloader)
 
         predictions = torch.cat([r['predictions'] for r in results]).cpu()
-        y_anchor = torch.cat([r['y_anchor'] for r in results]).cpu()
-        plot_calibration(predictions, y_anchor)
+        # y_anchor = torch.cat([r['y_anchor'] for r in results]).cpu()
+        # plot_calibration(predictions, y_anchor)
 
         # y_anchor_inv = (-1) * (y_anchor - 1)
         # # Only controls get probabilities, cases are set to 1
         # predictions = y_anchor_inv * model_predictions
         # # Update control probabilities from 0 to anchor model output
         # predictions = predictions + y_anchor
-        return predictions, y_anchor
+        return predictions

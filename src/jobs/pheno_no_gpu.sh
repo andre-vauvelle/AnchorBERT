@@ -1,9 +1,9 @@
 #$ -l tmem=16G
 #$ -l h_rt=50:0:0
-#$ -S /bin/bash
 #$ -l gpu=true
+#$ -S /bin/bash
 #$ -j y
-#$ -N simulation
+#$ -N pheno
 
 #$ -o /home/vauvelle/pycharm-sftp/pheprob/src/jobs/logs
 
@@ -14,5 +14,5 @@ export PYTHONPATH=$PYTHONPATH:$SOURCE_DIR
 cd $SOURCE_DIR || exit
 source /share/apps/source_files/cuda/cuda-10.1.source
 conda activate
-python -O -W ignore ./src/task/markovian.py
+python -O task/pheno.py
 date

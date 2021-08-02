@@ -11,7 +11,7 @@ import torch.functional as f
 # import seaborn as sns
 # code = '411.2'
 from definitions import RESULTS_DIR
-from model.metrics import inverse_normal_rank
+from model.metrics import apply_inverse_normal_rank
 
 # name = 'bert_250.2.tsv'
 # name = 'all_250.2.tsv'

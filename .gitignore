@@ -4,7 +4,13 @@ pheprob\ 2/
 results/
 src/.env
 src/jobs/logs/
+src/task/lightning_logs/
+pheprob_R/
+src/jobs/oldlogs/
+
+*.swp
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
+/src/.env_local

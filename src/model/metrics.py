@@ -23,7 +23,7 @@ def get_odds_ratio(Y_any_, G_):
     return odds_dg / odds_d
 
 
-def inverse_normal_rank(series, c=3.0 / 8, stochastic=True):
+def apply_inverse_normal_rank(series, c=3.0 / 8):
     """ Perform rank-based inverse normal transformation on pandas series.
         If stochastic is True ties are given rank randomly, otherwise ties will
         share the same value. NaN values are ignored.
@@ -40,7 +40,6 @@ def inverse_normal_rank(series, c=3.0 / 8, stochastic=True):
     # Check input
     assert (isinstance(series, pd.Series))
     assert (isinstance(c, float))
-    assert (isinstance(stochastic, bool))
 
     # Take original series indexes
     orig_idx = series.index
@@ -48,16 +47,8 @@ def inverse_normal_rank(series, c=3.0 / 8, stochastic=True):
     # Drop NaNs
     series = series.loc[~pd.isnull(series)]
 
-    # Get ranks
-    if stochastic == True:
-        # Shuffle by index
-        series = series.loc[np.random.permutation(series.index)]
-        # Get rank, ties are determined by their position in the series (hence
-        # why we randomised the series)
-        rank = ss.rankdata(series, method="ordinal")
-    else:
-        # Get rank, ties are averaged
-        rank = ss.rankdata(series, method="average")
+    # Get rank, ties are averaged
+    rank = ss.rankdata(series, method="average")
 
     # Convert numpy array back to series
     rank = pd.Series(rank, index=series.index)
@@ -77,7 +68,7 @@ def rank_to_normal(rank, c, n):
 def get_p_val(outcome, G, inverse_rank=False, family=sm.families.Binomial()):
     data = pd.DataFrame({'outcome': outcome, 'G': G, 'id': range(len(outcome))})
     if inverse_rank:
-        data.outcome = inverse_normal_rank(data.outcome)
+        data.outcome = apply_inverse_normal_rank(data.outcome)
     try:
         mod = smf.gee('outcome~G', 'id', data=data, family=family)
         res = mod.fit()
