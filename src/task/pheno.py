@@ -2,8 +2,7 @@ import os
 
 import pandas as pd
 import torch
-from torch.utils.data import DataLoader
-
+from torch.utils.data import DataLoader, ConcatDataset
 from data.datasets import PheDataset
 from model.logistic_regression import LogisticRegressionModel
 from model.bert.main import BERTAnchorModel
@@ -14,7 +13,7 @@ from omni.common import load_pickle
 
 import pytorch_lightning as pl
 
-from definitions import DATA_DIR, MODEL_DIR, MONGO_STR, MONGO_DB
+from definitions import DATA_DIR, MODEL_DIR, MONGO_STR, MONGO_DB, RESULTS_DIR
 
 from sacred import Experiment
 from sacred.observers import MongoObserver
@@ -51,23 +50,25 @@ SYMBOLS = ['PAD',
 
 DEBUG = __debug__
 # DEBUG = True
-
-N_WORKERS = 0 if DEBUG else os.cpu_count()
+DEBUG_STRING = 'debug' if __debug__ else ''
 
 
 @ex.config
 def config():
-    target_token = '714.0|714.1'
+    target_token = '411.2'
     global_params = {
         'use_code': 'code',  # 'phecode'
         'with_codes': 'all',
         'max_len_seq': 256,
-        'inverse_normal_rank_cols': ['logreg', 'bert', 'binomial_r', 'logreg_anchor', 'bert_anchor',
-                                     'binomial_r_anchor'],  # None to activate for all cols
-        'anchor_cols': ['logreg', 'bert', 'binomial_r', ]
+        'inverse_normal_rank_cols': ['logreg_anchor', 'bert_anchor'],  # None to activate for all cols
+        'anchor_cols': ['logreg', 'bert'],
+        'case_noise': 0,
+        'control_noise': 0,
     }
     file_config = {
-        'phenofile_name': target_token,
+        'phenofile_name': '{}_ca{}_co{}'.format(target_token,
+                                                str(global_params['case_noise']),
+                                                str(global_params['control_noise'])) + DEBUG_STRING,
         'phe_vocab': os.path.join(DATA_DIR, 'processed', global_params['with_codes'], 'phecode_vocab.pkl'),
         # vocabulary idx2token, token2idx
         'code_vocab': os.path.join(DATA_DIR, 'processed', global_params['with_codes'], 'code_vocab.pkl'),
@@ -76,8 +77,10 @@ def config():
         # vocabulary idx2token, token2idx
         'train_data': os.path.join(DATA_DIR, 'processed', global_params['with_codes'], 'MLM', 'phe_train.parquet'),
         'val_data': os.path.join(DATA_DIR, 'processed', global_params['with_codes'], 'MLM', 'phe_val.parquet'),
+        'test_data': os.path.join(DATA_DIR, 'processed', global_params['with_codes'], 'MLM', 'phe_test.parquet'),
         # formatted data
     }
+    # bert_config = None
     bert_config = {
         'pretrained': False,
         'skip_training': False,
@@ -87,7 +90,7 @@ def config():
             'weight_decay': 0.01
         },
         "train_params": {
-            'epochs': 10,
+            'epochs': 1 if __debug__ else 5,
             'batch_size': 64,
             'accumulate_grad_batches': 4,
             'effective_batch_size': 256,
@@ -95,7 +98,6 @@ def config():
             'auto_scale_batch_size': False,
             'auto_lr_find': False,
             'val_check_interval': 0.2,
-            'fast_dev_run': True if __debug__ else False
         },
         "model_config": {
             # if False then train from scratch, else look in os.path.join(MODEL_DIR, 'lightning')
@@ -116,8 +118,8 @@ def config():
             # The non-linear activation function in the encoder and the pooler "gelu", 'relu', 'swish' are supported
             'initializer_range': 0.02,  # parameter weight initializer range
         },
-        'bert_checkpoint_dir': os.path.join(MODEL_DIR, target_token),
-        'tensorboard_dir': os.path.join(MODEL_DIR, 'tensorboard', 'pheno_bert', target_token),
+        'bert_checkpoint_dir': os.path.join(MODEL_DIR, file_config['phenofile_name']),
+        'tensorboard_dir': os.path.join(MODEL_DIR, 'tensorboard', 'pheno_bert'),
         "feature_dict": {
             'age': False,
             'seg': True,
@@ -125,7 +127,10 @@ def config():
             'word': True
         }
     }
-    logreg_config = {'C': 1}
+    # logreg_config = {'C': 1}
+    logreg_config = {'param_grid': {'C': [0.0001, 0.001, 0.01, 0.1, 1, 10, 100, 1000]}, 'C': 1}
+
+    n_workers = 0 if DEBUG else os.cpu_count()
 
 
 def save_phenofile(dataset, prediction_store, filename, anchor_cols=None, inverse_normal_rank_cols=None):
@@ -163,7 +168,8 @@ def save_phenofile(dataset, prediction_store, filename, anchor_cols=None, invers
     return phenofile
 
 
-def update_phenofile(func, columns, phenofile=None, filename=None, new_filename=None, update_colnames='', drop_cols=True):
+def update_phenofile(func, columns, phenofile=None, filename=None, new_filename=None, update_colnames='',
+                     drop_cols=True):
     """
     Update phenotypes with a function applied to a pandas series
     :param func: Function that accepts pandas series
@@ -180,13 +186,11 @@ def update_phenofile(func, columns, phenofile=None, filename=None, new_filename=
     if filename is None and phenofile is None:
         raise ValueError("Please include either phenofile or filename")
 
-
     for col in columns:
         phenofile.loc[:, col + update_colnames] = func(phenofile.loc[:, col])
 
     if drop_cols:
         phenofile = phenofile.drop(columns=columns)
-
 
     if new_filename is not None:
         phenofile.to_csv(new_filename, sep='\t', index=False)
@@ -200,13 +204,15 @@ def apply_anchor(predictions: pd.Series, y_anchor: pd.Series):
     predictions = predictions + y_anchor  # setting cases to 1
     return predictions
 
+
 def anchor_decorator(func, anchor):
     def wrapper(predictions):
         return func(predictions, anchor)
+
     return wrapper
 
 
-def gen_covariates_file(filepath=os.path.join(DATA_DIR, 'processed', 'pheprob', 'covariates.tsv')):
+def gen_covariates_file(filepath=os.path.join(DATA_DIR, 'processed', 'covariates', 'covariates.tsv')):
     if not os.path.exists(filepath):
         baseline_path = '/SAN/ihibiobank/denaxaslab/UKB_application_58356/raw_data/baseline/58356.csv'
         chunksize = 10_000
@@ -253,8 +259,16 @@ def apply_inverse_normal_rank_dict(prediction_store, names):
             prediction_store.update({name + '_inr': inr_data})
 
 
+def metrics_tensor_to_float(metrics_store: dict):
+    for name, metrics in metrics_store.items():
+        for metric_name, value in metrics.items():
+            metrics_store[name][metric_name] = round(float(value), 4)
+
+
 @ex.automain
-def main(target_token, global_params, file_config, bert_config, logreg_config):
+def main(target_token, global_params, file_config, bert_config, logreg_config, n_workers):
+    target_token = str(target_token)
+
     code_vocab = load_pickle(file_config['code_vocab'])
     age_vocab = load_pickle(file_config['age_vocab'])
     phe_vocab = load_pickle(file_config['phe_vocab'])
@@ -263,15 +277,25 @@ def main(target_token, global_params, file_config, bert_config, logreg_config):
 
     train_data = pd.read_parquet(file_config['train_data'])
     val_data = pd.read_parquet(file_config['val_data'])
-    train_data = train_data.head(10_000) if DEBUG else train_data
+    test_data = pd.read_parquet(file_config['test_data'])
+
+    # No hyperparameter tuning. Merge test data into training and only use validation
+    # data for performance for anchor variable prediction
+    train_data = pd.concat([train_data, test_data], axis=0)
+
+    train_data = train_data.head(2_000) if DEBUG else train_data
     val_data = val_data.head(1_000) if DEBUG else val_data
 
-    train_dataset = PheDataset(train_data, code_vocab['token2idx'], age_vocab['token2idx'],
+    train_dataset = PheDataset(target_token, train_data, code_vocab['token2idx'], age_vocab['token2idx'],
                                max_len=global_params['max_len_seq'],
-                               phe2idx=phe_vocab['token2idx'])
-    val_dataset = PheDataset(val_data, code_vocab['token2idx'], age_vocab['token2idx'],
+                               phe2idx=phe_vocab['token2idx'],
+                               case_noise=global_params['case_noise'],
+                               control_noise=global_params['control_noise'])
+    val_dataset = PheDataset(target_token, val_data, code_vocab['token2idx'], age_vocab['token2idx'],
                              max_len=global_params['max_len_seq'],
-                             phe2idx=phe_vocab['token2idx'])
+                             phe2idx=phe_vocab['token2idx'],
+                             case_noise=global_params['case_noise'],
+                             control_noise=global_params['control_noise'])
 
     if bert_config is None:
         bert_model = None
@@ -280,57 +304,87 @@ def main(target_token, global_params, file_config, bert_config, logreg_config):
             bert_model = BERTAnchorModel.load_from_checkpoint(
                 token=target_token, token2idx=model_token2idx, bert_config=bert_config, file_config=file_config,
                 checkpoint_path=os.path.join(file_config['bert_checkpoint_dir'], file_config['bert_checkpoint_name']),
-                skip_training=bert_config['skip_training'], num_workers=N_WORKERS)
+                skip_training=bert_config['skip_training'], num_workers=n_workers)
         else:
+            tensorboard_name = file_config['phenofile_name']
             bert_model = BERTAnchorModel(token=target_token, token2idx=model_token2idx,
                                          bert_config=bert_config, file_config=file_config,
-                                         num_workers=N_WORKERS)
+                                         num_workers=n_workers,
+                                         tensorboard_name=tensorboard_name)
     if logreg_config is None:
         logreg_model = None
     else:
         logreg_model = LogisticRegressionModel(token=target_token, token2idx=model_token2idx, C=logreg_config['C'],
-                                               num_workers=N_WORKERS)
+                                               num_workers=n_workers, param_grid=logreg_config['param_grid'])
 
     estimators = [
         {'name': 'bert',
          'model': bert_model},
-        {'name': 'binomial_r',
-         'model': BinomialMixtureModelR(token=target_token, token2idx=model_token2idx,
-                                        num_workers=N_WORKERS)},
         {'name': 'logreg',
          'model': logreg_model},
+        {'name': 'binomial_r',
+         'model': BinomialMixtureModelR(token=target_token, token2idx=model_token2idx,
+                                        num_workers=n_workers)},
         {'name': 'threshold1',
          'model': ThresholdModel(threshold=1, token=target_token, token2idx=model_token2idx,
-                                 num_workers=N_WORKERS)},
+                                 num_workers=n_workers)},
+        {'name': 'threshold1_noised',
+         'model': ThresholdModel(threshold=1, token=target_token, token2idx=model_token2idx,
+                                 num_workers=n_workers, label_noise=True)},
         {'name': 'threshold2',
          'model': ThresholdModel(threshold=2, token=target_token, token2idx=model_token2idx,
-                                 num_workers=N_WORKERS)},
+                                 num_workers=n_workers)},
         {'name': 'threshold3',
          'model': ThresholdModel(threshold=3, token=target_token, token2idx=model_token2idx,
-                                 num_workers=N_WORKERS)},
+                                 num_workers=n_workers)},
     ]
+    noise_used = global_params['case_noise'] != 0 or global_params['control_noise'] != 0
+    if noise_used:
+        estimators.append(
+            {'name': 'threshold1_noised',
+             'model': ThresholdModel(threshold=1, token=target_token, token2idx=model_token2idx,
+                                     num_workers=n_workers, label_noise=True)}
+        )
 
     prediction_store = {}
+    metrics_store = {}
     for e in estimators:
         model = e['model']
         if model is None:
             continue
-        predictions = model.predict(train_dataset, val_dataset)
+        predictions, metrics = model.predict(train_dataset, val_dataset)
         prediction_store.update({e['name']: predictions.numpy()})
+        metrics_store.update({e['name']: metrics})
 
-    estimator_names = '_'.join([e['name'] for e in estimators if e['model'] is not None])
+    # estimator_names = '_'.join([e['name'] for e in estimators if e['model'] is not None])
 
-    phenofile = save_phenofile(train_dataset, prediction_store,
-                   os.path.join(DATA_DIR, 'processed','pheprob', file_config['phenofile_name'] + '.tsv'),
-                   anchor_cols=global_params['anchor_cols'],
-                   inverse_normal_rank_cols=global_params['inverse_normal_rank_cols'])
+    if val_dataset is not None:
+        full_data = pd.concat([train_data, val_data], axis=0)
+    else:
+        full_data = train_data
 
-    threshold1_anchor_func = anchor_decorator(apply_anchor, phenofile.threshold1)
+    phenofile = save_phenofile(full_data, prediction_store,
+                               os.path.join(DATA_DIR, 'processed', 'phenotypes',
+                                            file_config['phenofile_name'] + '.tsv'),
+                               anchor_cols=global_params['anchor_cols'],
+                               inverse_normal_rank_cols=global_params['inverse_normal_rank_cols'])
+
+    anchor_var = phenofile.threshold1_noised if noise_used else phenofile.threshold1
+    threshold1_anchor_func = anchor_decorator(apply_anchor, anchor_var)
 
     phenofile = update_phenofile(threshold1_anchor_func, global_params['anchor_cols'], phenofile=phenofile,
-                                 new_filename=os.path.join(DATA_DIR, 'processed', 'pheprob', file_config['phenofile_name'] + '_anchor.tsv'),
+                                 new_filename=os.path.join(DATA_DIR, 'processed', 'phenotypes',
+                                                           file_config['phenofile_name'] + '_anchor.tsv'),
                                  update_colnames='_anchor', drop_cols=True)
 
     update_phenofile(apply_inverse_normal_rank, global_params['inverse_normal_rank_cols'], phenofile=phenofile,
-                                 new_filename=os.path.join(DATA_DIR, 'processed', 'pheprob', file_config['phenofile_name'] + '_anchor_inr.tsv'),
-                                 update_colnames='_inr', drop_cols=True)
+                     new_filename=os.path.join(DATA_DIR, 'processed', 'phenotypes',
+                                               file_config['phenofile_name'] + '_anchor_inr.tsv'),
+                     update_colnames='_inr', drop_cols=True)
+    metrics_tensor_to_float(metrics_store)
+    df_results = pd.DataFrame(metrics_store)
+    results_path = os.path.join(RESULTS_DIR, 'pheno_results', 'classification_metrics',
+                                file_config['phenofile_name'] + '.csv')
+    df_results.to_csv(results_path)
+    ex.add_artifact(results_path, name='classification_metrics')
+    return metrics_store

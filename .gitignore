@@ -5,6 +5,10 @@ results/
 src/.env
 src/jobs/logs/
 src/task/lightning_logs/
+src/lightning_logs/
+src/jobs/configs/
+lightning_logs/
+.myrenv/
 pheprob_R/
 src/jobs/oldlogs/
 
@@ -14,3 +18,4 @@ src/jobs/oldlogs/
 __pycache__/
 *.py[cod]
 /src/.env_local
+

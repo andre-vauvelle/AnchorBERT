@@ -1,9 +1,13 @@
 import os
 
+import re
 import pandas as pd
 import numpy as np
 import torch
 from torch.utils.data.dataset import Dataset
+import pytorch_lightning as pl
+
+from omni.common import load_pickle
 
 
 def drop_mask(tokens, symbol='MASK'):
@@ -66,12 +70,45 @@ def get_token2idx(tokens, token2idx, drop_mask=False, mask_symbol='MASK'):
     return output_idx
 
 
+# class PheDataModule(pl.LightningDataModule):
+#     def __init__(self,
+#                  code_vocab_path, age_vocab_path, phe_vocab_path, train_data_path, val_data_path, max_len_seq,
+#                  debug=False):
+#         super().__init__()
+#         code_vocab = load_pickle(code_vocab_path)
+#         age_vocab = load_pickle(age_vocab_path)
+#         phe_vocab = load_pickle(phe_vocab_path)
+#
+#         model_token2idx = phe_vocab['token2idx']
+#
+#         train_data = pd.read_parquet(train_data_path)
+#         val_data = pd.read_parquet(val_data_path)
+#         train_data = train_data.head(10_000) if debug else train_data
+#         val_data = val_data.head(1_000) if debug else val_data
+#
+#         train_dataset = PheDataset(train_data, code_vocab['token2idx'], age_vocab['token2idx'],
+#                                    max_len=max_len_seq,
+#                                    phe2idx=phe_vocab['token2idx'])
+#         val_dataset = PheDataset(val_data, code_vocab['token2idx'], age_vocab['token2idx'],
+#                                  max_len=max_len_seq,
+#                                  phe2idx=phe_vocab['token2idx'])
+
+
+import random
+
+
+def flip(p):
+    return random.random() < p
+
+
 class PheDataset(Dataset):
-    def __init__(self, dataframe, token2idx, age2idx, max_len, drop_mask=True, token_col='code', age_col='age',
+    def __init__(self, target_token, dataframe, token2idx, age2idx, max_len, drop_mask=True, token_col='code',
+                 age_col='age',
                  phecode_col='phecode',
-                 phe2idx=None, token=None):
+                 phe2idx=None, case_noise=0, control_noise=0):
         """
 
+        :param target_token:
         :param dataframe:
         :param token2idx:
         :param age2idx:
@@ -81,7 +118,8 @@ class PheDataset(Dataset):
         :param age_col:
         :param phecode_col:
         :param phe2idx:
-        :param token:
+        :param case_noise: number between 0-1 with 1 being all cases flipped to controls
+        :param control_noise: number between 0-1 with 1 being all controls flipped to cases
         """
         self.vocab = token2idx
         self.max_len = max_len
@@ -92,6 +130,18 @@ class PheDataset(Dataset):
         self.drop_mask = drop_mask
         self.phecode = dataframe[phecode_col] if phecode_col is not None else None
         self.phe2idx = phe2idx if phe2idx is not None else None
+        self.target_token = target_token
+        self.target_token_list = [k for k in phe2idx.keys() if re.match(target_token, k) is not None]
+
+        self.case_noise = case_noise
+        self.control_noise = control_noise
+
+        n_noised_cases = int(len(self) * case_noise)
+        n_noised_controls = int(len(self) * control_noise)
+        self.case_noise_list = [True] * n_noised_cases + [False] * (len(self) - n_noised_cases)
+        self.control_noise_list = [True] * n_noised_controls + [False] * (len(self) - n_noised_controls)
+        random.shuffle(self.case_noise_list)
+        random.shuffle(self.control_noise_list)
 
     def __getitem__(self, index):
         """
@@ -99,12 +149,25 @@ class PheDataset(Dataset):
         """
 
         # extract data
-        age = self.age[index][(-self.max_len + 1):]
-        tokens = self.tokens[index][(-self.max_len + 1):]
+        age = self.age.iloc[index][(-self.max_len + 1):]
+        tokens = self.tokens.iloc[index][(-self.max_len + 1):]
+
         if self.phecode is not None:
-            phecode = self.phecode[index][(-self.max_len + 1):]
+            phecode = self.phecode.iloc[index][(-self.max_len + 1):]
         else:
             phecode = None
+
+        if self.target_token:
+            label = any(t in phecode for t in self.target_token_list)
+        else:
+            label = False
+
+        if self.case_noise != 0 and label == True:
+            if self.case_noise_list[index]:  # we want True flip to make label False
+                label = False
+        if self.control_noise != 0 and label == False:
+            if self.control_noise_list[index]:  # we want True flip to make label True
+                label = True
 
         # avoid data cut with first element to be 'SEP'
         if tokens[0] != 'SEP':
@@ -133,7 +196,7 @@ class PheDataset(Dataset):
         segment = index_seg(tokens)
 
         return torch.LongTensor(token_idx), torch.LongTensor(age_idx), torch.LongTensor(position), torch.LongTensor(
-            segment), torch.LongTensor(phecode_idx)
+            segment), torch.LongTensor(phecode_idx), torch.LongTensor([label])
 
     def __len__(self):
         return len(self.tokens)

@@ -1,7 +1,5 @@
 import argparse
-import os
 import pandas as pd
-from definitions import DATA_DIR
 
 from task.pheno import update_phenofile, anchor_decorator, apply_anchor, apply_inverse_normal_rank
 parser = argparse.ArgumentParser(description='update phenofile with anchor and inverse normal rank, seperate files')

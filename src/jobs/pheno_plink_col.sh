@@ -34,10 +34,10 @@ PFILE=$SGE_TASK_ID
   --pfile /SAN/icsbiobank/UKbiobank_ICS/Projects/GENIUS/GWAS/pgen_format/chr"$PFILE" \
   --glm cols=+a1freq omit-ref hide-covar \
   --out /SAN/ihibiobank/denaxaslab/andre/pheprob/gwas_results/$OUTPUT_FILE \
-  --pheno /SAN/ihibiobank/denaxaslab/andre/UKBB/data/processed/pheprob/"$PHENO_FILE" \
+  --pheno /SAN/ihibiobank/denaxaslab/andre/UKBB/data/processed/phenotypes/"$PHENO_FILE" \
   --pheno-name "$PHENO_COL_NAME"\
   --input-missing-phenotype -999 \
-  --covar /SAN/ihibiobank/denaxaslab/andre/UKBB/data/processed/pheprob/covariates.tsv \
+  --covar /SAN/ihibiobank/denaxaslab/andre/UKBB/data/processed/covariates/covariates.tsv \
   --covar-name sex,age,pca1-pca10 \
   --ci 0.95 \
   --threads "$NSLOTS"

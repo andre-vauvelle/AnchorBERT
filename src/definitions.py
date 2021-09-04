@@ -16,3 +16,4 @@ TENSORBOARD_DIR = os.getenv("TENSORBOARD_DIR")
 RESULTS_DIR = os.getenv("RESULTS_DIR")
 MONGO_STR = "bigtop:27017"
 MONGO_DB = "experiments"
+

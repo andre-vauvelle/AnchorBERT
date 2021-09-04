@@ -1,10 +1,11 @@
 import os
 
 import numpy as np
+import sklearn
 import torch
 import pytorch_lightning as pl
-from sklearn import preprocessing
-from torch.utils.data import DataLoader
+from sklearn import preprocessing, model_selection
+from torch.utils.data import DataLoader, ConcatDataset
 import torchmetrics
 import re
 from tqdm import tqdm
@@ -35,7 +36,7 @@ class LogisticRegressionModel(pl.LightningModule):
     def __init__(self, token, token2idx, token_type='phecode', batch_size=1_000, num_workers=0, verbose=False,
                  symbol_idxs=[0, 1, 2], emission_size=5,
                  checkpoint_path=os.path.join(MODEL_DIR, 'sklearn_regression', 'default.pkl'),
-                 C=1):
+                 C=1, param_grid=None):
         super().__init__()
         if token2idx is None:
             self.token_idxs = token
@@ -54,9 +55,10 @@ class LogisticRegressionModel(pl.LightningModule):
         self.token_type = token_type
         self.batch_size = batch_size
         self.num_workers = num_workers
-        self.model = LogisticRegression(penalty='l2', C=C, solver='lbfgs', max_iter=1000,
-                                        verbose=verbose)
+        self.model = LogisticRegression(penalty='l2', C=C, solver='lbfgs', max_iter=1000, verbose=verbose)
+        self.param_grid = param_grid
         self.checkpoint_path = checkpoint_path
+        self.verbose = verbose
 
     def forward(self, x_censored):
         predictions = self.model.predict_proba(x_censored)[:, 1]
@@ -76,50 +78,105 @@ class LogisticRegressionModel(pl.LightningModule):
         return x_censored, y_anchor
 
     def sklearn_dataload(self, dataloader):
+        """
+        gets data for sklearn model from pytorch dataloader
+        :param dataloader:
+        :return: x_censored: a numpy array of code couts, y_anchor: binary indicator of phecode presence, label: a noised version of y_anchor
+        """
         x_censored = torch.zeros((len(dataloader.dataset), self.features))
         y_anchor = torch.zeros(len(dataloader.dataset))
+        label = torch.zeros(len(dataloader.dataset))
         for i, batch in tqdm(enumerate(dataloader), desc='anchor sklearn dataload'):
-            token_idx, age_idx, position, segment, phecode_idx = batch
+            token_idx, age_idx, position, segment, phecode_idx, label_batch = batch
             idxs = phecode_idx if self.token_type == 'phecode' else token_idx
             x_censored_batch, y_anchor_batch = self.get_anchors_censored(idxs)
             x_censored[i * dataloader.batch_size:(i + 1) * dataloader.batch_size] = x_censored_batch
-            y_anchor[i * dataloader.batch_size:(i + 1) * dataloader.batch_size] = y_anchor_batch
+            label[i * dataloader.batch_size:(i + 1) * dataloader.batch_size] = label_batch.flatten()
+            y_anchor[i * dataloader.batch_size:(i + 1) * dataloader.batch_size] = y_anchor_batch.flatten()
 
-        return x_censored, y_anchor
+        return x_censored, y_anchor, label
 
-    def predict_sklearn(self, dataloader):
-        x_censored, y_anchor = self.sklearn_dataload(dataloader)
+    def fit_sklearn(self, dataloader):
+
+        x_censored, y_anchor, label = self.sklearn_dataload(dataloader)
         scaler = preprocessing.StandardScaler().fit(x_censored)
         x_censored_norm = scaler.transform(x_censored)
-        self.model = self.model.fit(x_censored_norm, y_anchor)
+
+        if self.param_grid is not None:
+            train_samples = dataloader.dataset.datasets[0]
+            test_samples = dataloader.dataset.datasets[1]
+
+            train_indices = np.arange(len(train_samples))
+            test_indices = np.arange(len(train_samples), len(train_samples) + len(test_samples))
+            cv = [(train_indices, test_indices)]
+            cv_model = sklearn.model_selection.GridSearchCV(estimator=self.model, param_grid=self.param_grid,
+                                                            refit=False,
+                                                            cv=cv,
+                                                            scoring='average_precision',
+                                                            n_jobs=1 if self.num_workers == 0 else self.num_workers)
+            cv_model = cv_model.fit(x_censored_norm, label)
+            self.model = LogisticRegression(penalty='l2', C=cv_model.best_params_['C'], solver='lbfgs', max_iter=1000,
+                                            verbose=self.verbose)
+        self.model.fit(x_censored_norm, label)
+
+    def predict_sklearn(self, dataloader):
+        x_censored, y_anchor, label = self.sklearn_dataload(dataloader)
+        scaler = preprocessing.StandardScaler().fit(x_censored)
+        x_censored_norm = scaler.transform(x_censored)
         predictions = self(x_censored_norm)
         predictions = torch.from_numpy(predictions).float()
-        return predictions, y_anchor
+        return predictions, y_anchor, label
 
     def predict(self, dataset, val_dataset=None):
-        dataloader = DataLoader(dataset=dataset, batch_size=self.batch_size, shuffle=False,
-                                num_workers=self.num_workers) # no shuffle needed as already done in preprocessing pipeline
 
-        predictions, y_anchor = self.predict_sklearn(dataloader)
+        dataloader = DataLoader(dataset=dataset, batch_size=self.batch_size, shuffle=False,
+                                num_workers=self.num_workers)  # no shuffle needed as already done in preprocessing pipeline
+
+        if val_dataset is not None:
+            full_dataset = ConcatDataset((dataset, val_dataset))
+            full_dataloader = DataLoader(dataset=full_dataset, batch_size=self.batch_size, shuffle=False,
+                                         num_workers=self.num_workers)  # no shuffle needed as already done in preprocessing pipeline
+            self.fit_sklearn(full_dataloader)
+        else:
+            self.fit_sklearn(dataloader)
+
+        train_predictions, y_anchor, label = self.predict_sklearn(dataloader)
 
         if self.checkpoint_path is not None:
             save_pickle(self.model, filename=self.checkpoint_path)
 
         # Metrics
-        print("average_precision: {}".format(torchmetrics.functional.average_precision(predictions, y_anchor, pos_label=1)))
-        print("auroc: {}".format(torchmetrics.functional.auroc(predictions, y_anchor.int(), pos_label=1)))
+        auprc = torchmetrics.functional.average_precision(train_predictions, y_anchor, pos_label=1)
+        print("average_precision: {}".format(auprc))
+        auroc = torchmetrics.functional.auroc(train_predictions, y_anchor.int(), pos_label=1)
+        print("auroc: {}".format(auroc))
         if val_dataset is not None:
             val_dataloader = DataLoader(dataset=val_dataset, batch_size=self.batch_size, shuffle=False,
                                         num_workers=self.num_workers)
-            val_x_censored, val_y_anchor = self.sklearn_dataload(val_dataloader)
+            val_x_censored, val_y_anchor, val_label = self.sklearn_dataload(val_dataloader)
             scaler = preprocessing.StandardScaler().fit(val_x_censored)
             val_x_censored_norm = scaler.transform(val_x_censored)
             val_predictions = self(val_x_censored_norm)
             val_predictions = torch.from_numpy(val_predictions).float()
-            print("val_average_precision: {}".format(torchmetrics.functional.average_precision(val_predictions, val_y_anchor, pos_label=1)))
-            print("val_auroc: {}".format(torchmetrics.functional.auroc(val_predictions, val_y_anchor.int(), pos_label=1)))
+            val_auprc = torchmetrics.functional.average_precision(val_predictions, val_y_anchor, pos_label=1)
+            print("val_average_precision: {}".format(val_auprc))
+            val_auroc = torchmetrics.functional.auroc(val_predictions, val_y_anchor.int(), pos_label=1)
+            print("val_auroc: {}".format(val_auroc))
+            predictions = torch.cat((train_predictions, val_predictions), dim=0)
+        else:
+            val_auroc = 0
+            val_auprc = 0
+            predictions = train_predictions
 
-        return predictions
+        metrics = {
+            "average_precision": auprc,
+            "auroc": auroc,
+            "val_average_precision": val_auprc,
+            "val_auroc": val_auroc,
+            "C": self.model.get_params()['C']
+        }
+
+        return predictions, metrics
 
 # if __name__ == '__main__':
 #     plt.boxplot(x_censored_norm[np.array(y_anchor.to(bool))])
