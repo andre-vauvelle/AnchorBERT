@@ -127,7 +127,7 @@ class LogisticRegressionModel(pl.LightningModule):
         predictions = torch.from_numpy(predictions).float()
         return predictions, y_anchor, label
 
-    def predict(self, dataset, val_dataset=None):
+    def predict(self, dataset, val_dataset=None, test_dataset=None):
 
         dataloader = DataLoader(dataset=dataset, batch_size=self.batch_size, shuffle=False,
                                 num_workers=self.num_workers)  # no shuffle needed as already done in preprocessing pipeline
@@ -140,15 +140,15 @@ class LogisticRegressionModel(pl.LightningModule):
         else:
             self.fit_sklearn(dataloader)
 
-        train_predictions, y_anchor, label = self.predict_sklearn(dataloader)
+        predictions, y_anchor, label = self.predict_sklearn(dataloader)
 
         if self.checkpoint_path is not None:
             save_pickle(self.model, filename=self.checkpoint_path)
 
         # Metrics
-        auprc = torchmetrics.functional.average_precision(train_predictions, y_anchor, pos_label=1)
+        auprc = torchmetrics.functional.average_precision(predictions, y_anchor, pos_label=1)
         print("average_precision: {}".format(auprc))
-        auroc = torchmetrics.functional.auroc(train_predictions, y_anchor.int(), pos_label=1)
+        auroc = torchmetrics.functional.auroc(predictions, y_anchor.int(), pos_label=1)
         print("auroc: {}".format(auroc))
         if val_dataset is not None:
             val_dataloader = DataLoader(dataset=val_dataset, batch_size=self.batch_size, shuffle=False,
@@ -162,17 +162,34 @@ class LogisticRegressionModel(pl.LightningModule):
             print("val_average_precision: {}".format(val_auprc))
             val_auroc = torchmetrics.functional.auroc(val_predictions, val_y_anchor.int(), pos_label=1)
             print("val_auroc: {}".format(val_auroc))
-            predictions = torch.cat((train_predictions, val_predictions), dim=0)
+            predictions = torch.cat((predictions, val_predictions), dim=0)
         else:
             val_auroc = 0
             val_auprc = 0
-            predictions = train_predictions
+        if test_dataset is not None:
+            test_dataloader = DataLoader(dataset=test_dataset, batch_size=self.batch_size, shuffle=False,
+                                         num_workers=self.num_workers)
+            test_x_censored, test_y_anchor, test_label = self.sklearn_dataload(test_dataloader)
+            scaler = preprocessing.StandardScaler().fit(test_x_censored)
+            test_x_censored_norm = scaler.transform(test_x_censored)
+            test_predictions = self(test_x_censored_norm)
+            test_predictions = torch.from_numpy(test_predictions).float()
+            test_auprc = torchmetrics.functional.average_precision(test_predictions, test_y_anchor, pos_label=1)
+            print("test_average_precision: {}".format(test_auprc))
+            test_auroc = torchmetrics.functional.auroc(test_predictions, test_y_anchor.int(), pos_label=1)
+            print("test_auroc: {}".format(test_auroc))
+            predictions = torch.cat((predictions, test_predictions), dim=0)
+        else:
+            test_auroc = 0
+            test_auprc = 0
 
         metrics = {
             "average_precision": auprc,
             "auroc": auroc,
             "val_average_precision": val_auprc,
             "val_auroc": val_auroc,
+            "test_average_precision": test_auprc,
+            "test_auroc": test_auroc,
             "C": self.model.get_params()['C']
         }
 

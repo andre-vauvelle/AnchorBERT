@@ -52,7 +52,7 @@ class BERTAnchorModel(Bert.modeling.BertPreTrainedModel, pl.LightningModule):
     def __init__(self, token, token2idx, bert_config, symbol_idxs=[0, 1], skip_training=False,
                  predict_proba=True, emission_size=5, num_workers=0, token_type='phecode',
                  file_config=None, max_len_seq=256, temperature_scaling=False,
-                 verbose=False, tensorboard_name='default'):
+                 verbose=False, tensorboard_name='default', pretrained_bert=None):
         config = BertConfig(bert_config['model_config'])
         super(BERTAnchorModel, self).__init__(config)
 
@@ -88,7 +88,10 @@ class BERTAnchorModel(Bert.modeling.BertPreTrainedModel, pl.LightningModule):
         self.token_type = token_type
         self.num_labels = num_labels
         feature_dict = bert_config['feature_dict']
-        self.bert = BertModel(config, feature_dict)
+        if pretrained_bert is None:
+            self.bert = BertModel(config, feature_dict)
+        else:
+            self.bert = pretrained_bert
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
         self.classifier = nn.Linear(config.hidden_size, 1)
         # self.sigmoid = nn.Sigmoid()
@@ -107,12 +110,13 @@ class BERTAnchorModel(Bert.modeling.BertPreTrainedModel, pl.LightningModule):
         self.train_metrics_noise = metrics.clone(prefix='train_noise_')
         self.valid_metrics = metrics.clone(prefix='val_')
         self.valid_metrics_noise = metrics.clone(prefix='val_noise_')
+        self.test_metrics = metrics.clone(prefix='test_')
 
     def get_anchors_censored_mask(self, x):
         """Gets the mask of anchor terms for x_censored and  y"""
-        censor_mask = torch.stack([x == t for t in self.token_idxs]).any(0).int()
+        censor_mask = torch.stack([x == t for t in self.token_idxs]).any(0).int()  # 1 to mask 0 to attend
         targets = (censor_mask > 0).any(-1).int()
-        censor_mask = (-1) * (censor_mask - 1)
+        censor_mask = (-1) * (censor_mask - 1)  # 1 to attended 0 to mask
         return censor_mask, targets
 
     def forward(self, batch):
@@ -121,7 +125,7 @@ class BERTAnchorModel(Bert.modeling.BertPreTrainedModel, pl.LightningModule):
             x = phecode_idx
         else:
             x = token_idx
-        censor_mask, y_anchor = self.get_anchors_censored_mask(x)
+        censor_mask, y_anchor = self.get_anchors_censored_mask(x)  # Could be moved to data loader...
         _, pooled_output = self.bert(input_ids=x, age_ids=age_idx, seg_ids=segment, posi_ids=position,
                                      attention_mask=censor_mask,
                                      output_all_encoded_layers=False)
@@ -152,6 +156,18 @@ class BERTAnchorModel(Bert.modeling.BertPreTrainedModel, pl.LightningModule):
         output_noise = self.valid_metrics_noise.compute()
         self.valid_metrics_noise.reset()
         self.log_dict(output_noise, prog_bar=True)
+
+    def test_step(self, batch, batch_idx):
+        logits, label, y_anchor = self(batch)
+        loss = self.loss_func(logits, y_anchor.float())
+        self.log('val_loss', loss, prog_bar=True)
+        predictions = f.sigmoid(logits)
+        self.test_metrics.update(predictions, label)
+
+    def on_test_epoch_end(self):
+        output = self.test_metrics.compute()
+        self.test_metrics.reset()
+        self.log_dict(output, prog_bar=True)
 
     def predict_step(self, batch, batch_idx: int, dataloader_idx=None):
         logits, label, y_anchor = self(batch)
@@ -199,7 +215,7 @@ class BERTAnchorModel(Bert.modeling.BertPreTrainedModel, pl.LightningModule):
     #                              phe2idx=phe_vocab['token2idx'])
     #     return DataLoader(dataset=val_dataset, batch_size=self.batch_size)
 
-    def predict(self, dataset, val_dataset=None, tv_split=0.8):
+    def predict(self, dataset, val_dataset=None, test_dataset=None, tv_split=0.8):
         """TODO: refactor out"""
         # model wil be overwritten if do_training but not for temperature_scaling
         model = self
@@ -212,52 +228,42 @@ class BERTAnchorModel(Bert.modeling.BertPreTrainedModel, pl.LightningModule):
             train_dataset = dataset
             # dataset = ConcatDataset([train_dataset, val_dataset])
 
+        train_dataloader = DataLoader(dataset=train_dataset, batch_size=self.train_params['batch_size'],
+                                      shuffle=True,
+                                      num_workers=self.num_workers)
+        val_dataloader = DataLoader(dataset=val_dataset, batch_size=self.train_params['batch_size'], shuffle=False,
+                                    num_workers=self.num_workers)
+        test_dataloader = DataLoader(dataset=test_dataset, batch_size=self.train_params['batch_size'], shuffle=False,
+                                     num_workers=self.num_workers)
+        checkpoint_filename = '{epoch}-{val_loss:.4f}{val_AveragePrecision:.4f}{val_AUROC:.4f}'
+        checkpoint_filename = checkpoint_filename + 'debug' if __debug__ else checkpoint_filename
+        checkpoint_callback = ModelCheckpoint(dirpath=self.bert_checkpoint_dir,
+                                              filename=checkpoint_filename,
+                                              monitor='val_AveragePrecision',
+                                              mode='max'
+                                              )
+        trainer = pl.Trainer(max_epochs=self.train_params['epochs'], check_val_every_n_epoch=1,
+                             val_check_interval=self.train_params['val_check_interval'],
+                             checkpoint_callback=True,
+                             callbacks=[checkpoint_callback, ],
+                             gpus=self.train_params['gpus'],
+                             num_sanity_val_steps=-1,
+                             accumulate_grad_batches=self.train_params['accumulate_grad_batches'],
+                             logger=self.tb_logger)
+
+        if self.train_params['auto_lr_find']:
+            # Run learning rate finder
+            lr_finder = trainer.tuner.lr_find(self)
+            # Plot with
+            fig = lr_finder.plot(suggest=True)
+            fig.show()
+            # Pick point based on plot, or get suggestion
+            new_lr = lr_finder.suggestion()
+            # update lr of the model
+            self.lr = new_lr
+
         if not self.skip_training:
-            train_dataloader = DataLoader(dataset=train_dataset, batch_size=self.train_params['batch_size'],
-                                          shuffle=True,
-                                          num_workers=self.num_workers)
-            val_dataloader = DataLoader(dataset=val_dataset, batch_size=self.train_params['batch_size'], shuffle=False,
-                                        num_workers=self.num_workers)
-            checkpoint_filename = '{epoch}-{val_loss:.4f}-{val_AveragePrecision:.4f}-{val_AUROC:.4f}'
-            checkpoint_filename = checkpoint_filename + 'debug' if __debug__ else checkpoint_filename
-            checkpoint_callback = ModelCheckpoint(dirpath=self.bert_checkpoint_dir,
-                                                  filename=checkpoint_filename,
-                                                  monitor='val_AveragePrecision',
-                                                  mode='max'
-                                                  )
-            trainer = pl.Trainer(max_epochs=self.train_params['epochs'], check_val_every_n_epoch=1,
-                                 val_check_interval=self.train_params['val_check_interval'],
-                                 checkpoint_callback=True,
-                                 callbacks=[checkpoint_callback, ],
-                                 gpus=self.train_params['gpus'],
-                                 accumulate_grad_batches=self.train_params['accumulate_grad_batches'],
-                                 logger=self.tb_logger)
-
-            if self.train_params['auto_scale_batch_size']:
-                tuner = Tuner(trainer)
-                new_batch_size = tuner.scale_batch_size(self)
-                self.batch_size = new_batch_size
-                new_accumulate_grad_batches = int(self.train_params['effective_batch_size'] / self.batch_size)
-                trainer = pl.Trainer(max_epochs=self.train_params['epochs'], check_val_every_n_epoch=1,
-                                     val_check_interval=self.train_params['val_check_interval'],
-                                     gpus=self.train_params['gpus'],
-                                     accumulate_grad_batches=new_accumulate_grad_batches,
-                                     logger=self.tb_logger)
-
-                print("New batch size: {}".format(new_batch_size))
-            if self.train_params['auto_lr_find']:
-                # Run learning rate finder
-                lr_finder = trainer.tuner.lr_find(self)
-                # Plot with
-                fig = lr_finder.plot(suggest=True)
-                fig.show()
-                # Pick point based on plot, or get suggestion
-                new_lr = lr_finder.suggestion()
-                # update lr of the model
-                self.lr = new_lr
-
             trainer.fit(self, train_dataloader, val_dataloader)
-
             model = BERTAnchorModel.load_from_checkpoint(
                 checkpoint_callback.best_model_path, token=self.token, token2idx=self.token2idx,
                 bert_config=self.bert_config, file_config=self.file_config,
@@ -270,42 +276,29 @@ class BERTAnchorModel(Bert.modeling.BertPreTrainedModel, pl.LightningModule):
             model.set_temperature(val_dataloader)
 
         # Get training predictions
-        prediction_dataloader = DataLoader(dataset=dataset, batch_size=512,
+
+        full_dataset = ConcatDataset([train_dataset, val_dataset, test_dataset])
+        prediction_dataloader = DataLoader(dataset=full_dataset, batch_size=512,
                                            shuffle=False, num_workers=self.num_workers)
         prediction_trainer = pl.Trainer(gpus=self.train_params['gpus'])
         results = prediction_trainer.predict(model, prediction_dataloader)
-        train_predictions = torch.cat([r['predictions'] for r in results]).cpu()
-        train_y_anchor = torch.cat([r['y_anchor'] for r in results]).cpu()
-        # train_label = torch.cat([r['label'] for r in results]).cpu()
-        # Get validation predictions
-        val_prediction_dataloader = DataLoader(dataset=val_dataset, batch_size=512,
-                                               shuffle=False, num_workers=self.num_workers)
-        val_prediction_trainer = pl.Trainer(gpus=self.train_params['gpus'])
-        val_results = val_prediction_trainer.predict(model, val_prediction_dataloader)
-        val_predictions = torch.cat([r['predictions'] for r in val_results]).cpu()
-        val_y_anchor = torch.cat([r['y_anchor'] for r in val_results]).cpu()
-        # val_label = torch.cat([r['label'] for r in val_results]).cpu()
 
-        # Calculate metrics on full datasets with best model
-        # Training
-        train_auprc = torchmetrics.functional.average_precision(train_predictions, train_y_anchor, pos_label=1)
-        print("train_average_precision: {}".format(train_auprc))
-        train_auroc = torchmetrics.functional.auroc(train_predictions, train_y_anchor.int(), pos_label=1)
-        print("train_auroc: {}".format(train_auroc))
-        # Validation
-        val_auprc = torchmetrics.functional.average_precision(val_predictions, val_y_anchor, pos_label=1)
-        print("val_average_precision: {}".format(val_auprc))
-        val_auroc = torchmetrics.functional.auroc(val_predictions, val_y_anchor.int(), pos_label=1)
-        print("val_auroc: {}".format(val_auroc))
+        predictions = torch.cat([r['predictions'] for r in results]).cpu()
 
-        metrics = {
-            "average_precision": train_auprc,
-            "auroc": train_auroc,
-            "val_average_precision": val_auprc,
-            "val_auroc": val_auroc
-        }
+        train_metrics = trainer.validate(model, train_dataloader)[0]
+        val_metrics = trainer.validate(model, val_dataloader)[0]
+        test_metrics = trainer.test(model, test_dataloader)[0]
 
+        train_metrics_old = train_metrics
+        train_metrics = {}
+        for key, value in train_metrics_old.items():
+            if 'val_' == key[:4]:
+                new_key = 'train_' + key[4:]
+                train_metrics.update({new_key: value})
 
-        predictions = torch.cat((train_predictions, val_predictions), dim=0)
+        metrics = {}
+        metrics.update(train_metrics)
+        metrics.update(val_metrics)
+        metrics.update(test_metrics)
 
         return predictions, metrics

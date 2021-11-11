@@ -129,7 +129,7 @@ if __name__ == '__main__':
     pheno_dict = {
         '411.2': {
             'name': 'Myocardial Infarction',
-            'big_gwas_thr1': "/SAN/ihibiobank/denaxaslab/andre/pheprob/results/gwas_results/combined/411.2_ca0_co0_anchor.tsv.threshold1.gz",
+            'big_gwas': "/SAN/ihibiobank/denaxaslab/andre/pheprob/results/gwas_results/combined/411.2_ca0_co0_anchor.tsv.threshold1.gz",
             'catalog_results': '/SAN/ihibiobank/denaxaslab/andre/pheprob/results/catalog/411.2.csv',
             'full_pheno_path': '/SAN/ihibiobank/denaxaslab/andre/UKBB/data/processed/phenotypes/411.2_ca0_co0_anchor.tsv',
             'pheno_dir': '411.2_ca0_co0_anchor_',
@@ -137,28 +137,28 @@ if __name__ == '__main__':
         },
         '250.2': {
             'name': 'Type 2 Diabetes',
-            'big_gwas_thr1': "/SAN/ihibiobank/denaxaslab/andre/pheprob/results/gwas_results/combined/250.2_ca0_co0_anchor.tsv.threshold1.gz",
+            'big_gwas': "/SAN/ihibiobank/denaxaslab/andre/pheprob/results/gwas_results/combined/250.2_ca0_co0_anchor.tsv.threshold1.gz",
             'catalog_results': '/SAN/ihibiobank/denaxaslab/andre/pheprob/results/catalog/250.2.csv',
             'full_pheno_path': '/SAN/ihibiobank/denaxaslab/andre/UKBB/data/processed/phenotypes/250.2_ca0_co0_anchor.tsv',
             'pheno_dir': '250.2_ca0_co0_anchor',
         },
         '714.0|714.1': {
             'name': 'Rheumatoid Arthritis',
-            'big_gwas_thr1': "/SAN/ihibiobank/denaxaslab/andre/pheprob/results/gwas_results/combined/714.0|714.1_ca0_co0_anchor.tsv.threshold1.gz",
+            'big_gwas': "/SAN/ihibiobank/denaxaslab/andre/pheprob/results/gwas_results/combined/714.0|714.1_ca0_co0_anchor.tsv.threshold3.gz",
             'catalog_results': '/SAN/ihibiobank/denaxaslab/andre/pheprob/results/catalog/714.0|714.1.csv',
             'full_pheno_path': '/SAN/ihibiobank/denaxaslab/andre/UKBB/data/processed/phenotypes/714.0|714.1_ca0_co0_anchor.tsv',
             'pheno_dir': '714.0|714.1_ca0_co0_anchor_',
         },
         '428.2': {
             'name': 'Heart Failure',
-            'big_gwas_thr1': "/SAN/ihibiobank/denaxaslab/andre/pheprob/results/gwas_results/combined/428.2_ca0_co0_anchor.tsv.threshold1.gz",
+            'big_gwas': "/SAN/ihibiobank/denaxaslab/andre/pheprob/results/gwas_results/combined/428.2_ca0_co0_anchor.tsv.threshold1.gz",
             'catalog_results': '/SAN/ihibiobank/denaxaslab/andre/pheprob/results/catalog/428.2.csv',
             'full_pheno_path': '/SAN/ihibiobank/denaxaslab/andre/UKBB/data/processed/phenotypes/428.2_ca0_co0_anchor.tsv',
             'pheno_dir': '428.2_ca0_co0_',
         },
         '290.1': {
             'name': 'Dementia',
-            'big_gwas_thr1': "/SAN/ihibiobank/denaxaslab/andre/pheprob/results/gwas_results/combined/290.1_ca0_co0_anchor.tsv.threshold1.gz",
+            'big_gwas': "/SAN/ihibiobank/denaxaslab/andre/pheprob/results/gwas_results/combined/290.1_ca0_co0_anchor.tsv.threshold1.gz",
             'catalog_results': '/SAN/ihibiobank/denaxaslab/andre/pheprob/results/catalog/290.1.csv',
             'full_pheno_path': '/SAN/ihibiobank/denaxaslab/andre/UKBB/data/processed/phenotypes/290.1_ca0_co0_anchor.tsv',
             'pheno_dir': '290.1_ca0_co0_anchor_',
@@ -172,35 +172,35 @@ if __name__ == '__main__':
     codes = ['411.2', '428.2', '290.1', '714.0|714.1', '250.2']
     codes = ['411.2', '250.2']
     # codes = ['290.1', '714.0|714.1', '250.2']
-    # codes = ['714.0|714.1',]
+    code = '714.0|714.1'
     store = []
     for code in codes:
         name = pheno_dict[code]['name']
-        big_gwas_path = pheno_dict[code]['big_gwas_thr1']
+        big_gwas_path = pheno_dict[code]['big_gwas']
         catalog_path = pheno_dict[code]['catalog_results']
         pheno_dir = pheno_dict[code]['pheno_dir']
-
-        big_gwas = pd.read_csv(big_gwas_path, sep='\t', compression='gzip', error_bad_lines=False)
-        big_gwas.sort_values('P', ascending=True, inplace=True)
 
         catalog_results = pd.read_csv(catalog_path)
         catalog_results = catalog_results.dropna(subset=['matched_gwas_ids'])
         catalog_results.matched_gwas_ids = catalog_results.matched_gwas_ids.apply(lambda x: eval(x))
         matched_snps = catalog_results.matched_gwas_ids.explode().drop_duplicates().to_frame()
-        matched_snps = matched_snps.merge(big_gwas.loc[:, ['CHROM', 'ID']], left_on='matched_gwas_ids', right_on='ID')
+        big_gwas = pd.read_csv(big_gwas_path, sep='\t', compression='gzip', error_bad_lines=False)
+        matched_snps = matched_snps.merge(big_gwas.loc[:, ['CHROM', 'ID']], left_on='matched_gwas_ids',
+                                          right_on='ID')
         if use_all_matched:
             chr_snps_dict = matched_snps.groupby('CHROM').ID.apply(lambda x: list(set(x))).to_dict()
         else:
+            big_gwas.sort_values('P', ascending=True, inplace=True)
             sig_snps = big_gwas[big_gwas.P < 5e-8].drop_duplicates()
             chr_snps_dict = sig_snps.groupby('CHROM').ID.apply(lambda x: list(set(x))).to_dict()
 
         # catalog_results.matched_cata_ids = catalog_results.matched_cata_ids.apply(lambda x: eval(x))
-
-        for f in np.arange(0, 1.1, 0.1):
-            subset_pheno(subset_frac=f, trials=10, cases_s=True, phenofile_path=pheno_dict[code]['full_pheno_path'])
-            if f != 0:
-                subset_pheno(subset_frac=f, trials=10, cases_s=False,
-                             phenofile_path=pheno_dict[code]['full_pheno_path'])
+        #
+        # for f in np.arange(0, 1.1, 0.1):
+        #     subset_pheno(subset_frac=f, trials=10, cases_s=True, phenofile_path=pheno_dict[code]['full_pheno_path'])
+        #     if f != 0:
+        #         subset_pheno(subset_frac=f, trials=10, cases_s=False,
+        #                      phenofile_path=pheno_dict[code]['full_pheno_path'])
 
         for f in np.arange(0, 1.1, 0.1):
             ablated_pheno_dir_c = pheno_dir + 'c' + str(round(f, 1))

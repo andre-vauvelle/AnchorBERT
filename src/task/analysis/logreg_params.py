@@ -1,17 +1,31 @@
+import os
+
 import pandas as pd
+import numpy as np
 import matplotlib.pyplot as plt
 import pymongo
 from pymongo import MongoClient
 import pprint
 
+from definitions import RESULTS_DIR
+
+plt.rcParams['figure.figsize'] = [9.0, 8.0]
+plt.rcParams['figure.dpi'] = 200
+plt.rcParams['mathtext.fontset'] = 'custom'
+plt.rcParams['mathtext.rm'] = 'Bitstream Vera Sans'
+plt.rcParams['mathtext.it'] = 'Bitstream Vera Sans:italic'
+plt.rcParams['mathtext.bf'] = 'Bitstream Vera Sans:bold'
+plt.rcParams['font.size'] = 22
+
+
 if __name__ == '__main__':
     client = MongoClient('bigtop', 27017)
     db = client.experiments
 
-    # token = '411.2'
-    # token = '250.2'
+    token = '411.2'
+    token = '250.2'
     token = '428.2'
-    noise_type = 'control_noise'
+    # noise_type = 'control_noise'
     # noise_type = 'case_noise'
     # noise_type = 'both_noise'
     # metric_col = 'val_average_precision'
@@ -22,11 +36,15 @@ if __name__ == '__main__':
             "250.2":
                 {"name": "Type 2 Diabetes"},
             "428.2":
-                {"name": "Heart Failure"}
+                {"name": "Heart Failure"},
+            "290.1":
+                {"name": "Dementia"},
+            "714.0|714.1":
+                {"name": "Rheumatoid Arthritis"}
             }
     phenotype_name = data[token]['name']
 
-    query_string = {"config.global_params.control_noise": {"$eq": 0},
+    query_string = {"config.global_params.control_noise": {"$gte": 0},
                     "config.global_params.case_noise": {"$eq": 0},
                     "config.file_config.phenofile_name": {"$not": {"$regex": ".*debug"}},
                     "result": {"$ne": "null"}}
@@ -40,8 +58,10 @@ if __name__ == '__main__':
         try:
             store.append({
                 "_id": r['_id'],
-                "token": r['config']['target_token'],
+                "token": str(r['config']['target_token']),
                 "start_time": r['start_time'],
+                "control_noise": r['config']['global_params']['control_noise'],
+                "case_noise": r['config']['global_params']['case_noise'],
                 "bert_train_auroc": r["result"]['bert']['auroc'],
                 "bert_train_ap": r["result"]['bert']['average_precision'],
                 "bert_valid_auroc": r["result"]['bert']['val_auroc'],
@@ -53,28 +73,3 @@ if __name__ == '__main__':
             })
         except:
             pass
-
-    df = pd.DataFrame(store)
-    df = df.iloc[1:, ]
-    df.sort_values(by='bert_valid_ap', inplace=True, ascending=False)
-
-    df.loc[:, ['logreg_train_auroc', 'logreg_train_ap', 'logreg_valid_auroc', 'logreg_valid_ap']]
-    df.loc[:, ['bert_train_auroc', 'bert_train_ap', 'bert_valid_auroc', 'bert_valid_ap']]
-
-    df = pd.read_csv('/SAN/ihibiobank/denaxaslab/andre/UKBB/data/processed/phenotypes/250.2_ca0_co0.tsv', sep='\t')
-    df.threshold1.sum()
-    round(df.threshold1.sum() / df.shape[0], 4)
-    df = pd.read_csv('/SAN/ihibiobank/denaxaslab/andre/UKBB/data/processed/phenotypes/411.2_ca0_co0.tsv', sep='\t')
-    df.threshold1.sum()
-    round(df.threshold1.sum() / df.shape[0], 4)
-    df = pd.read_csv('/SAN/ihibiobank/denaxaslab/andre/UKBB/data/processed/phenotypes/428.2_ca0_co0.tsv', sep='\t')
-    df.threshold1.sum()
-    round(df.threshold1.sum() / df.shape[0], 4)
-    df = pd.read_csv('/SAN/ihibiobank/denaxaslab/andre/UKBB/data/processed/phenotypes/714.0|714.1_ca0_co0.tsv',
-                     sep='\t')
-    df.threshold1.sum()
-    round(df.threshold1.sum() / df.shape[0], 4)
-    df = pd.read_csv('/SAN/ihibiobank/denaxaslab/andre/UKBB/data/processed/phenotypes/290.1_ca0_co0.tsv',
-                     sep='\t')
-    df.threshold1.sum()
-    round(df.threshold1.sum() / df.shape[0], 4)

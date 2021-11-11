@@ -32,6 +32,12 @@ def pad_sequence(tokens, max_len, symbol='PAD'):
 
 
 def index_seg(tokens, symbol='SEP'):
+    """
+    Alternates between visits
+    :param tokens:
+    :param symbol:
+    :return:
+    """
     flag = 0
     seg = []
 
@@ -48,6 +54,12 @@ def index_seg(tokens, symbol='SEP'):
 
 
 def position_idx(tokens, symbol='SEP'):
+    """
+    Increments per vist
+    :param tokens:
+    :param symbol:
+    :return:
+    """
     pos = []
     flag = 0
 
@@ -68,6 +80,41 @@ def get_token2idx(tokens, token2idx, drop_mask=False, mask_symbol='MASK'):
         else:
             output_idx.append(token2idx.get(token, token2idx['UNK']))
     return output_idx
+
+
+def get_random_mask(phecode_idx, mask_prob=0.12, rand_prob=0.015):
+    """
+
+    :param phecode_idx:
+    :param token2idx:
+    :param mask_prob:
+    :param rand_prob: TODO
+    :return:
+    """
+    output_mask = []
+    output_mask_label = []
+    output_phecode_idx = []
+
+    for i, idx in enumerate(phecode_idx):
+        # exclude special symbols from masking
+        if idx in (0, 1, 2, 3, 4):  # PAD MASK SEP CLS UNK
+            # output_mask.append(1)
+            output_mask_label.append(-1)
+            output_phecode_idx.append(idx)
+            continue
+        prob = random.random()
+
+        if prob < mask_prob:
+            # mask with 0 which means do not attend to this value (effectively drops value)
+            # output_mask.append(0)  # do not attend masked value
+            output_mask_label.append(idx)  # add label for loss calc
+            output_phecode_idx.append(1)  # change token to mask token
+        else:
+            # output_mask.append(1)  # attend this value
+            output_mask_label.append(-1)  # exclude form loss func
+            output_phecode_idx.append(idx)  # keep original token if not masked
+
+    return output_phecode_idx, output_mask_label
 
 
 # class PheDataModule(pl.LightningDataModule):
@@ -105,7 +152,8 @@ class PheDataset(Dataset):
     def __init__(self, target_token, dataframe, token2idx, age2idx, max_len, drop_mask=True, token_col='code',
                  age_col='age',
                  phecode_col='phecode',
-                 phe2idx=None, case_noise=0, control_noise=0):
+                 phe2idx=None, case_noise=0, control_noise=0,
+                 mlm=False):
         """
 
         :param target_token:
@@ -120,6 +168,7 @@ class PheDataset(Dataset):
         :param phe2idx:
         :param case_noise: number between 0-1 with 1 being all cases flipped to controls
         :param control_noise: number between 0-1 with 1 being all controls flipped to cases
+        :param mlm: instead of returning label, return masks for mlm
         """
         self.vocab = token2idx
         self.max_len = max_len
@@ -130,11 +179,15 @@ class PheDataset(Dataset):
         self.drop_mask = drop_mask
         self.phecode = dataframe[phecode_col] if phecode_col is not None else None
         self.phe2idx = phe2idx if phe2idx is not None else None
+
         self.target_token = target_token
-        self.target_token_list = [k for k in phe2idx.keys() if re.match(target_token, k) is not None]
+        self.target_token_list = [k for k in phe2idx.keys() if
+                                  re.match(target_token, k) is not None] if target_token is not None else None
 
         self.case_noise = case_noise
         self.control_noise = control_noise
+
+        self.mlm = mlm
 
         n_noised_cases = int(len(self) * case_noise)
         n_noised_controls = int(len(self) * control_noise)
@@ -157,18 +210,6 @@ class PheDataset(Dataset):
         else:
             phecode = None
 
-        if self.target_token:
-            label = any(t in phecode for t in self.target_token_list)
-        else:
-            label = False
-
-        if self.case_noise != 0 and label == True:
-            if self.case_noise_list[index]:  # we want True flip to make label False
-                label = False
-        if self.control_noise != 0 and label == False:
-            if self.control_noise_list[index]:  # we want True flip to make label True
-                label = True
-
         # avoid data cut with first element to be 'SEP'
         if tokens[0] != 'SEP':
             tokens = np.append(np.array(['CLS']), tokens)
@@ -186,7 +227,10 @@ class PheDataset(Dataset):
         token_idx = get_token2idx(tokens, self.vocab)
         if phecode is not None:
             if self.drop_mask:
-                phecode = drop_mask(phecode)
+                phecode = drop_mask(
+                    phecode)  # Slightly confusing as mask here only drop tokens which are too small to be included in vocab
+            mask = np.ones(self.max_len)
+            mask[len(phecode):] = 0  # this is the attention mask to pad which is also excluded in embeddings? https://github.com/huggingface/transformers/issues/205
             phecode = pad_sequence(phecode, self.max_len)
             phecode_idx = get_token2idx(phecode, self.phe2idx, drop_mask=self.drop_mask)
         else:
@@ -195,8 +239,24 @@ class PheDataset(Dataset):
         position = position_idx(tokens)
         segment = index_seg(tokens)
 
-        return torch.LongTensor(token_idx), torch.LongTensor(age_idx), torch.LongTensor(position), torch.LongTensor(
-            segment), torch.LongTensor(phecode_idx), torch.LongTensor([label])
+        if self.mlm:
+            phecode_idx, mask_labels = get_random_mask(phecode_idx)
+            return torch.LongTensor(token_idx), torch.LongTensor(age_idx), torch.LongTensor(position), torch.LongTensor(
+                segment), torch.LongTensor(phecode_idx), torch.LongTensor(mask), torch.LongTensor(mask_labels)
+        else:
+            if self.target_token:
+                label = any(t in phecode for t in self.target_token_list)
+            else:
+                label = False
+
+            if self.case_noise != 0 and label == True:
+                if self.case_noise_list[index]:  # we want True flip to make label False
+                    label = False
+            if self.control_noise != 0 and label == False:
+                if self.control_noise_list[index]:  # we want True flip to make label True
+                    label = True
+            return torch.LongTensor(token_idx), torch.LongTensor(age_idx), torch.LongTensor(position), torch.LongTensor(
+                segment), torch.LongTensor(phecode_idx), torch.LongTensor([label])
 
     def __len__(self):
         return len(self.tokens)

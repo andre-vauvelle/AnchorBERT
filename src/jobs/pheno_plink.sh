@@ -23,7 +23,7 @@ PFILE=chr"$1"
 # or the original data /SAN/icsbiobank/UKbiobank_ICS/Projects/GENIUS/GWAS/phenos/prev/prev_allcvd_logistic_tabdelim.txt
 PHENO_FILE="$2"
 
-sleep "$(shuf -i 60-800 -n1)"
+sleep "$(shuf -i 60-600 -n1)"
 
 #mkdir -p /scratch0/vauvelle/"$JOB_ID"."$SGE_TASK_ID"
 hostname
@@ -32,7 +32,7 @@ date
 /share/apps/genomics/plink-2.0/bin/plink2 --1 \
   --pfile /SAN/icsbiobank/UKbiobank_ICS/Projects/GENIUS/GWAS/pgen_format/"$PFILE" \
   --glm cols=+a1freq omit-ref hide-covar \
-  --out /SAN/ihibiobank/denaxaslab/andre/pheprob/results/gwas_results/"$JOB_ID"."$SGE_TASK_ID"/"$OUTPUT_FILE" \
+  --out /SAN/ihibiobank/denaxaslab/andre/pheprob/results/gwas_results/"$OUTPUT_FILE" \
   --pheno /SAN/ihibiobank/denaxaslab/andre/UKBB/data/processed/phenotypes/"$PHENO_FILE" \
   --input-missing-phenotype -999 \
   --covar /SAN/ihibiobank/denaxaslab/andre/UKBB/data/processed/covariates/covariates.tsv \

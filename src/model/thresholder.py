@@ -41,9 +41,11 @@ class ThresholdModel(pl.LightningModule):
     def training_step(self, batch, batch_idx):
         pass
 
-    def predict(self, dataset, val_dataset=None):
+    def predict(self, dataset, val_dataset=None, test_dataset=None):
         if val_dataset is not None:
             dataset = ConcatDataset((dataset, val_dataset))
+        if test_dataset is not None:
+            dataset = ConcatDataset((dataset, test_dataset))
 
         predictions = torch.zeros(len(dataset))
         dataloader = DataLoader(dataset=dataset, batch_size=self.batch_size, shuffle=False,

@@ -4,6 +4,7 @@ import pandas as pd
 import torch
 from torch.utils.data import DataLoader, ConcatDataset
 from data.datasets import PheDataset
+from model.bert.mlm import BERTMLM
 from model.logistic_regression import LogisticRegressionModel
 from model.bert.main import BERTAnchorModel
 from model.binomial_mixture_model_r import BinomialMixtureModelR
@@ -50,6 +51,7 @@ SYMBOLS = ['PAD',
 
 DEBUG = __debug__
 # DEBUG = True
+# DEBUG = False
 DEBUG_STRING = 'debug' if __debug__ else ''
 
 
@@ -57,7 +59,6 @@ DEBUG_STRING = 'debug' if __debug__ else ''
 def config():
     target_token = '411.2'
     global_params = {
-        'use_code': 'code',  # 'phecode'
         'with_codes': 'all',
         'max_len_seq': 256,
         'inverse_normal_rank_cols': ['logreg_anchor', 'bert_anchor'],  # None to activate for all cols
@@ -82,7 +83,8 @@ def config():
     }
     # bert_config = None
     bert_config = {
-        'pretrained': False,
+        # 'pretrained': 'mlm-epoch=49-val_loss=3.5780-val_AveragePrecision=0.1628val_Precision=0.2067.ckpt',
+        'pretrained': '',
         'skip_training': False,
         "optim_config": {
             'lr': 1e-4,
@@ -128,7 +130,10 @@ def config():
         }
     }
     # logreg_config = {'C': 1}
-    logreg_config = {'param_grid': {'C': [0.0001, 0.001, 0.01, 0.1, 1, 10, 100, 1000]}, 'C': 1}
+    logreg_config = {
+        'param_grid': {'C': [0.0001, 0.001, 0.01, 0.1, 1, 10, 100, 1000]}, 'C': 1,
+        'checkpoint_path': os.path.join(MODEL_DIR, 'sklearn_regression', '{}.pkl'.format(file_config['phenofile_name']))
+    }
 
     n_workers = 0 if DEBUG else os.cpu_count()
 
@@ -281,10 +286,11 @@ def main(target_token, global_params, file_config, bert_config, logreg_config, n
 
     # No hyperparameter tuning. Merge test data into training and only use validation
     # data for performance for anchor variable prediction
-    train_data = pd.concat([train_data, test_data], axis=0)
+    # train_data = pd.concat([train_data,], axis=0)
 
     train_data = train_data.head(2_000) if DEBUG else train_data
     val_data = val_data.head(1_000) if DEBUG else val_data
+    test_data = test_data.head(1_000) if DEBUG else test_data
 
     train_dataset = PheDataset(target_token, train_data, code_vocab['token2idx'], age_vocab['token2idx'],
                                max_len=global_params['max_len_seq'],
@@ -296,15 +302,25 @@ def main(target_token, global_params, file_config, bert_config, logreg_config, n
                              phe2idx=phe_vocab['token2idx'],
                              case_noise=global_params['case_noise'],
                              control_noise=global_params['control_noise'])
+    test_dataset = PheDataset(target_token, test_data, code_vocab['token2idx'], age_vocab['token2idx'],
+                              max_len=global_params['max_len_seq'],
+                              phe2idx=phe_vocab['token2idx'],
+                              case_noise=global_params['case_noise'],
+                              control_noise=global_params['control_noise'])
 
     if bert_config is None:
         bert_model = None
     else:
         if bert_config['pretrained']:
-            bert_model = BERTAnchorModel.load_from_checkpoint(
+            pretrained_bert = BERTMLM.load_from_checkpoint(token2idx=model_token2idx, bert_config=bert_config,
+                                                           checkpoint_path=os.path.join(MODEL_DIR, 'mlm',
+                                                                                        bert_config['pretrained'])
+                                                           )
+            tensorboard_name = file_config['phenofile_name']
+            bert_model = BERTAnchorModel(
                 token=target_token, token2idx=model_token2idx, bert_config=bert_config, file_config=file_config,
-                checkpoint_path=os.path.join(file_config['bert_checkpoint_dir'], file_config['bert_checkpoint_name']),
-                skip_training=bert_config['skip_training'], num_workers=n_workers)
+                skip_training=bert_config['skip_training'], num_workers=n_workers, tensorboard_name=tensorboard_name,
+                pretrained_bert=pretrained_bert.bert)
         else:
             tensorboard_name = file_config['phenofile_name']
             bert_model = BERTAnchorModel(token=target_token, token2idx=model_token2idx,
@@ -315,7 +331,8 @@ def main(target_token, global_params, file_config, bert_config, logreg_config, n
         logreg_model = None
     else:
         logreg_model = LogisticRegressionModel(token=target_token, token2idx=model_token2idx, C=logreg_config['C'],
-                                               num_workers=n_workers, param_grid=logreg_config['param_grid'])
+                                               num_workers=n_workers, param_grid=logreg_config['param_grid'],
+                                               checkpoint_path=logreg_config['checkpoint_path'])
 
     estimators = [
         {'name': 'bert',
@@ -352,14 +369,14 @@ def main(target_token, global_params, file_config, bert_config, logreg_config, n
         model = e['model']
         if model is None:
             continue
-        predictions, metrics = model.predict(train_dataset, val_dataset)
+        predictions, metrics = model.predict(train_dataset, val_dataset, test_dataset)
         prediction_store.update({e['name']: predictions.numpy()})
         metrics_store.update({e['name']: metrics})
 
     # estimator_names = '_'.join([e['name'] for e in estimators if e['model'] is not None])
 
     if val_dataset is not None:
-        full_data = pd.concat([train_data, val_data], axis=0)
+        full_data = pd.concat([train_data, val_data, test_data], axis=0)
     else:
         full_data = train_data
 
@@ -388,3 +405,34 @@ def main(target_token, global_params, file_config, bert_config, logreg_config, n
     df_results.to_csv(results_path)
     ex.add_artifact(results_path, name='classification_metrics')
     return metrics_store
+
+
+##### HyperOpt support #####################
+from hyperopt import STATUS_OK, STATUS_FAIL
+
+
+# noinspection PyUnresolvedReferences
+
+def hyperopt_objective(params):
+    config = {}
+
+    try:
+        if type(params) == dict:
+            params = params.items()
+
+        for (key, value) in params:
+            config[key] = value
+        run = ex.run(config_updates=config, )
+        err = run.result
+
+        if config['evaluate_on_test']:
+            result = {'loss': 1, 'status': STATUS_OK}
+            result.update(err)
+            return result
+        return {'loss': 1 - np.mean(err['best_validation_auc']), 'status': STATUS_OK}
+    except Exception as e:
+        return {'status': STATUS_FAIL,
+                'time': time.time(),
+                'exception': str(e)}
+
+##### End HyperOpt support #################

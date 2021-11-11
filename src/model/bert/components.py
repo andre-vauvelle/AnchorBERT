@@ -139,84 +139,16 @@ class BertModel(Bert.modeling.BertPreTrainedModel):
 
 
 class BertForMaskedLM(Bert.modeling.BertPreTrainedModel):
-    def __init__(self, config):
-        super(BertForMaskedLM, self).__init__(config)
-        self.bert = BertModel(config)
-        self.cls = Bert.modeling.BertOnlyMLMHead(config, self.bert.embeddings.word_embeddings.weight)
-        self.apply(self.init_bert_weights)
-
-    def forward(self, input_ids, age_ids=None, seg_ids=None, posi_ids=None, attention_mask=None, masked_lm_labels=None):
-        sequence_output, _ = self.bert(input_ids, age_ids, seg_ids, posi_ids, attention_mask,
-                                       output_all_encoded_layers=False)
-        prediction_scores = self.cls(sequence_output)
-
-        if masked_lm_labels is not None:
-            loss_fct = nn.CrossEntropyLoss(ignore_index=-1)
-            masked_lm_loss = loss_fct(prediction_scores.view(-1, self.config.vocab_size), masked_lm_labels.view(-1))
-            return masked_lm_loss, prediction_scores.view(-1, self.config.vocab_size), masked_lm_labels.view(-1)
-        else:
-            return prediction_scores
-
-
-class BertLMPredictionHead(nn.Module):
-    def __init__(self, config, bert_model_embedding_weights):
-        super(BertLMPredictionHead, self).__init__()
-        self.transform = BertPredictionHeadTransform(config)
-
-        # The output weights are the same as the input embeddings, but there is
-        # an output-only bias for each token.
-        self.decoder = nn.Linear(bert_model_embedding_weights.size(1),
-                                 config['output_'],
-                                 bias=False)
-        self.decoder.weight = bert_model_embedding_weights
-        self.bias = nn.Parameter(torch.zeros(bert_model_embedding_weights.size(0)))
-
-    def forward(self, hidden_states):
-        hidden_states = self.transform(hidden_states)
-        hidden_states = self.decoder(hidden_states) + self.bias
-        return hidden_states
-
-
-class BertForMaskedPM(Bert.modeling.BertPreTrainedModel):
-    """Bert for masked phe model"""
-
-    def __init__(self, config):
-        super(BertForMaskedLM, self).__init__(config)
-        self.bert = BertModel(config)
-        self.cls = Bert.modeling.BertOnlyMLMHead(config, self.bert.embeddings.word_embeddings.weight)
-        self.apply(self.init_bert_weights)
-
-    def forward(self, input_ids, age_ids=None, seg_ids=None, posi_ids=None, attention_mask=None, masked_lm_labels=None):
-        sequence_output, _ = self.bert(input_ids, age_ids, seg_ids, posi_ids, attention_mask,
-                                       output_all_encoded_layers=False)
-        prediction_scores = self.cls(sequence_output)
-
-        if masked_lm_labels is not None:
-            loss_fct = nn.CrossEntropyLoss(ignore_index=-1)
-            masked_lm_loss = loss_fct(prediction_scores.view(-1, self.config.vocab_size), masked_lm_labels.view(-1))
-            return masked_lm_loss, prediction_scores.view(-1, self.config.vocab_size), masked_lm_labels.view(-1)
-        else:
-            return prediction_scores
-
-
-class BertForMultiLabelPrediction(Bert.modeling.BertPreTrainedModel):
-    def __init__(self, config, num_labels, feature_dict):
-        super(BertForMultiLabelPrediction, self).__init__(config)
-        self.num_labels = num_labels
+    def __init__(self, config, feature_dict):
+        super(BertForMaskedLM, self).__init__(config, feature_dict)
         self.bert = BertModel(config, feature_dict)
-        self.dropout = nn.Dropout(config.hidden_dropout_prob)
-        self.classifier = nn.Linear(config.hidden_size, num_labels)
+        self.cls = Bert.modeling.BertOnlyMLMHead(config, self.bert.embeddings.word_embeddings.weight)
         self.apply(self.init_bert_weights)
 
-    def forward(self, input_ids, age_ids=None, seg_ids=None, posi_ids=None, attention_mask=None, labels=None):
-        _, pooled_output = self.bert(input_ids, age_ids, seg_ids, posi_ids, attention_mask,
-                                     output_all_encoded_layers=False)
-        pooled_output = self.dropout(pooled_output)
-        logits = self.classifier(pooled_output)
+    def forward(self, input_ids, age_ids=None, seg_ids=None, posi_ids=None, attention_mask=None):
+        sequence_output, _ = self.bert(input_ids, age_ids, seg_ids, posi_ids, attention_mask,
+                                       output_all_encoded_layers=False)
+        prediction_scores = self.cls(sequence_output)
 
-        if labels is not None:
-            loss_fct = nn.MultiLabelSoftMarginLoss()
-            loss = loss_fct(logits.view(-1, self.num_labels), labels.view(-1, self.num_labels))
-            return loss, logits
-        else:
-            return logits
+        return prediction_scores
+

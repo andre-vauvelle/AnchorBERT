@@ -10,8 +10,8 @@
 #$ -N gwas
 #$ -o /home/vauvelle/pycharm-sftp/pheprob/src/jobs/logs
 #$ -e /home/vauvelle/pycharm-sftp/pheprob/src/jobs/logs/errors
-#$ -t 1:714
-#$ -tc 100
+#$ -t 1:42
+#$ -tc 42
 
 # This the file name which will be used for the results
 # /SAN/ihibiobank/denaxaslab/andre/pheprob/gwas_results/"$OUTPUT_FILE"

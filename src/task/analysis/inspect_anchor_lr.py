@@ -9,10 +9,11 @@ import matplotlib.pyplot as plt
 
 if __name__ == '__main__':
     global_params = {'with_codes': 'all'}
-    phecode_definitions = pd.read_csv(os.path.join(DATA_DIR, 'vocabs', 'phecode_definitions1.2.csv'))
+    phecode_definitions = pd.read_csv(os.path.join(DATA_DIR, 'external', 'phecode_definitions1.2.csv'))
     phecode_definitions.phecode = phecode_definitions.astype(str)
     model = load_pickle(os.path.join(MODEL_DIR, 'sklearn_regression', 'anchor_250.pkl'))
-    phe_vocab = load_pickle(os.path.join(DATA_DIR, 'vocabs', 'phecode_vocab.pkl'))
+    phe_vocab = load_pickle(
+        os.path.join('/SAN/ihibiobank/denaxaslab/andre/UKBB/data/processed/all', 'phecode_vocab.pkl'))
     idx2token = phe_vocab['idx2token']
     token2idx = phe_vocab['token2idx']
     coefficients = model.coef_
@@ -23,6 +24,7 @@ if __name__ == '__main__':
     remove_tokens = symbol_tokens + phe_tokens
 
     kept_tokens = [t for t in token2idx.keys() if t not in remove_tokens]
+
     keptidx2token = dict(zip(range(len(kept_tokens)), kept_tokens))
 
     df = pd.DataFrame({'tokens': kept_tokens, 'coefficients': coefficients.flatten()})
@@ -31,7 +33,7 @@ if __name__ == '__main__':
     phecode_definitions.phecode.apply(lambda x: df.tokens.str.match(x).index)
     df = df.merge(phecode_definitions, how='left', left_on='tokens', right_on='phecode')
 
-    df.iloc[:10, [0, 1, 3]]
+    df.iloc[:11, [0, 1, 3]]
     # df.iloc[:10]
     # Out[76]:
     #      tokens  coefficients

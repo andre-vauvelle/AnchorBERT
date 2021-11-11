@@ -116,10 +116,9 @@ def in_range_snps(row, catalog):
     return chrom[(chrom.pos <= row.loci_downstream) & (chrom.pos >= row.loci_upstream)].snps.unique()
 
 
-def get_matched_data_results(sig_gwas_ld, catalog_ld):
-    joined = merge_on_ld_and_id(sig_gwas_ld, catalog_ld)
+def get_matched_data_results(joined):
     matched_gwas_ids = set(joined.ID.dropna().unique())
-    matched_cata_ids = set(joined.rsID.dropn().unique())
+    matched_cata_ids = set(joined.rsID.dropna().unique())
 
     gwas_ids = set(sig_gwas_ld.ID.unique())
     cata_ids = set(catalog_ld.rsID.unique())
@@ -238,11 +237,12 @@ if __name__ == '__main__':
     }
 
     codes = ['411.2', '250.2', '714.0|714.1', '428.2', '290.1']
-    # code = '411.2'
-    # code = '250.2'
+    code = '411.2'
+    code = '250.2'
+    # codes = ['714.0|714.1']
     # code = '714.0|714.1'
     # code = '428.2'
-    code = '290.1'
+    # code = '290.1'
 
     for code in codes:
         big_gwas_thr1_path = pheno_dict[code]['big_gwas_thr1']
@@ -300,7 +300,8 @@ if __name__ == '__main__':
                     'name': name,
                 })
             else:
-                data = merge_on_ld_and_id(sig_gwas_ld, catalog_ld)
+                joined = merge_on_ld_and_id(sig_gwas_ld, catalog_ld)
+                data = get_matched_data_results(joined)
                 store.append({
                     'name': name,
                     "len_gwas_ids": len(data['gwas_ids']),
@@ -340,6 +341,18 @@ if __name__ == '__main__':
     code = '428.2'
     code = '411.2'
     code = '290.1'
+    code = '714.0|714.1'
+    len_cols = ['name',
+                "len_gwas_ids",
+                "len_cata_ids",
+                "len_matched_gwas_ids",
+                "len_matched_cata_ids",
+                "len_unmatched_gwas_ids",
+                "len_unmatched_cata_ids",
+                "mean_cata_pvalues_in_gwas_top5",
+                "mean_cata_pvalues_in_gwas"
+                ]
+
     store = []
     for code in codes:
         df_results = pd.read_csv(os.path.join(RESULTS_DIR, 'catalog', '{}.csv'.format(code)))
@@ -349,4 +362,4 @@ if __name__ == '__main__':
     df_results_all = pd.concat(store, axis=0)
     df_results_all.loc[:, 'power'] = df_results_all.len_matched_cata_ids / df_results_all.len_cata_ids
 
-    df_results_all.loc[:, ['code', 'name', 'power', 'len_gwas_ids', 'len_cata_ids', 'len_matched_cata_ids']]
+    print(df_results_all.loc[:, ['code', 'name', 'power', 'len_gwas_ids', 'len_cata_ids', 'len_matched_cata_ids', 'len_matched_gwas_ids']])

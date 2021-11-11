@@ -1,7 +1,7 @@
 ##!/bin/bash -l
 #$ -S /bin/bash
 #$ -l h_rt=100:00:00
-#$ -l h_vmem=9G,tmem=9G
+#$ -l h_vmem=20G,tmem=20G
 #$ -N gwas
 #$ -o /home/vauvelle/pycharm-sftp/pheprob/src/jobs/logs
 #$ -e /home/vauvelle/pycharm-sftp/pheprob/src/jobs/logs/errors

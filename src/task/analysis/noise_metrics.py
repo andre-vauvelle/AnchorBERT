@@ -43,11 +43,19 @@ if __name__ == '__main__':
                 {"name": "Rheumatoid Arthritis"}
             }
     phenotype_name = data[token]['name']
+    noise_type='case_noise'
+    # noise_type='control_noise'
 
-    query_string = {"config.global_params.control_noise": {"$gte": 0},
-                    "config.global_params.case_noise": {"$eq": 0},
-                    "config.file_config.phenofile_name": {"$not": {"$regex": ".*debug"}},
-                    "result": {"$ne": "null"}}
+    if noise_type == 'control_noise':
+        query_string = {"config.global_params.control_noise": {"$gte": 0},
+                        "config.global_params.case_noise": {"$eq": 0},
+                        "config.file_config.phenofile_name": {"$not": {"$regex": ".*debug"}},
+                        "result": {"$ne": "null"}}
+    else:
+        query_string = {"config.global_params.control_noise": {"$eq": 0},
+                        "config.global_params.case_noise": {"$gte": 0},
+                        "config.file_config.phenofile_name": {"$not": {"$regex": ".*debug"}},
+                        "result": {"$ne": "null"}}
 
     projections_string = {"result": 1, "config": 1, "start_time": 1}
 
@@ -75,26 +83,28 @@ if __name__ == '__main__':
             pass
 
     df = pd.DataFrame(store)
-    df.sort_values(by=['control_noise', '_id', 'token'], inplace=True)
+    df.sort_values(by=[noise_type, '_id', 'token'], inplace=True)
     df = df[df._id > 550]
-    df.drop_duplicates(subset=['token', 'control_noise'], keep='last', inplace=True)
+    df.drop_duplicates(subset=['token', noise_type],keep='last', inplace=True)
 
-    noise_name = 'control_noise'
     groups = list(df.groupby('token'))
     for t, df_g in groups:
         name = data[str(t)]['name']
-        noise = df_g[noise_name]
+        noise = df_g[noise_type]
 
         plt.plot(noise, df_g.logreg_valid_ap, label='LR', marker='x', linestyle='-.')
         plt.plot(noise, df_g.bert_valid_ap, label='BERT', marker='o')
 
+        # plt.plot(noise, df_g.logreg_valid_auroc, label='LR', marker='x', linestyle='-.')
+        # plt.plot(noise, df_g.bert_valid_auroc, label='BERT', marker='o')
+
         plt.ylabel('AUPRC')
-        plt.xlabel('Proportion of Control Noise')
+        plt.xlabel('Proportion of corrupted controls')
         plt.xticks(np.arange(0, 1, 0.1))
         plt.title(name)
         plt.legend(frameon=False, prop={'size': 18})
         plt.tight_layout()
-        plt.savefig(os.path.join(RESULTS_DIR, 'noise_results_plots', '{}.png'.format(t)))
+        plt.savefig(os.path.join(RESULTS_DIR, 'noise_results_plots', '{}_{}.png'.format(noise_type,t)))
         plt.show()
 
 # plt.ylabel('% of total significant SNPs \n from threshold 1')

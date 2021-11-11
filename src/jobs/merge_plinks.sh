@@ -42,7 +42,7 @@ rm $tmp
 #echo "Saved and sorted to: $outpath2"
 
 transfer_path="/home/vauvelle/pycharm-sftp/pheprob/results/transfer/."
-gzip "$outpath"
+gzip -f "$outpath"
 #mv "${outpath}.gz" transfer_path
 sleep 10m
 #echo "Also gziped and copied to: $transfer_path"

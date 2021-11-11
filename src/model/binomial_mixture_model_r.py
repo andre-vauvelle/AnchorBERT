@@ -66,11 +66,13 @@ write.csv(predictions, "{}")\'{}""".format(temp_input.name, temp_output.name, ve
                 x[i * dataloader.batch_size:(i + 1) * dataloader.batch_size] = token_idx
         return x, y_anchor
 
-    def predict(self, dataset, val_dataset=None):
+    def predict(self, dataset, val_dataset=None, test_dataset=None):
 
         max_len = dataset.max_len
         if val_dataset is not None:
             dataset = ConcatDataset((dataset, val_dataset))
+        if test_dataset is not None:
+            dataset = ConcatDataset((dataset, test_dataset))
         x, y_anchor = self.unpack_data(dataset, max_len)
         predictions = self(x)
 
