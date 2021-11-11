@@ -1,4 +1,4 @@
-# :anchor:BERT: Phenotyping with Positive Unlabelled Learning for Genome-Wide Association Studies
+# :anchor: AnchorBERT: Phenotyping with Positive Unlabelled Learning for Genome-Wide Association Studies
 
 This repository contains the code used in Phenotyping with Positive Unlabelled Learning for Genome-Wide Association Studies.
 
