@@ -7,13 +7,14 @@ from datetime import timedelta
 
 import numpy as np
 import pandas as pd
+from sacred import Experiment
+from sacred.utils import apply_backspaces_and_linefeeds
 from sklearn.model_selection import train_test_split
 from ast import literal_eval
 import pyarrow
 
-from src.data.data_loader.utils import fit_vocab
+from data.preprocess.utils import fit_vocab
 from definitions import DATA_DIR, EXTERNAL_DATA_DIR, ROOT_DIR
-from src.data.preprocess.utils import keep_up_to_n_visits
 from src.omni.common import save_pickle, load_pickle
 
 random.seed(42)
@@ -26,23 +27,55 @@ SEPARATOR_TOKEN = 'SEP'
 UNKNOWN_TOKEN = 'UNK'
 MASK_TOKEN = 'MASK'
 
+import argparse
+
+base = os.path.basename(__file__)
+experiment_name = os.path.splitext(base)[0]
+ex = Experiment(experiment_name)
+ex.captured_out_filter = apply_backspaces_and_linefeeds
+
+
+@ex.config
+def config():
+    # Patient data
+    patient_base_raw_path = os.path.join(DATA_DIR, 'raw', 'application58356', 'patient_base.csv'),
+    event_data_path = os.path.join(DATA_DIR, 'raw', 'application58356', 'hesin.tsv'),
+    diag_event_data_path = os.path.join(DATA_DIR, 'raw', 'application58356', 'hesin_diag.tsv'),
+    opcs_event_data_path = os.path.join(DATA_DIR, 'raw', 'application58356', 'hesin_oper.tsv'),
+    gp_event_data_path = os.path.join(DATA_DIR, 'raw', 'application58356', 'gp_clinical.tsv'),
+    # External data (None patient sensitive)
+    caliber_secondary_care_dict_path = os.path.join(EXTERNAL_DATA_DIR, 'caliber_secondary_care_dict.csv'),
+    icd10_phecode = os.path.join(EXTERNAL_DATA_DIR, 'phecode_icd10.csv'),
+    read2_phecode = os.path.join(EXTERNAL_DATA_DIR, 'read2_to_phecode.csv'),
+    readctv3_phecode = os.path.join(EXTERNAL_DATA_DIR, 'readctv3_to_phecode.csv')
+    verbose = True
+
 
 class BiobankDataset:
     def __init__(self,
-                 application='application58356',
-                 patient_base_raw_path='patient_base.csv',
-                 event_data_path='hesin.tsv',
-                 diag_event_data_path='hesin_diag.tsv',
-                 opcs_event_data_path='hesin_oper.tsv',
-                 gp_event_data_path='gp_clinical.tsv',
+                 # Patient data
+                 patient_base_raw_path=os.path.join(DATA_DIR, 'raw', 'application58356', 'patient_base.csv'),
+                 event_data_path=os.path.join(DATA_DIR, 'raw', 'application58356', 'hesin.tsv'),
+                 diag_event_data_path=os.path.join(DATA_DIR, 'raw', 'application58356', 'hesin_diag.tsv'),
+                 opcs_event_data_path=os.path.join(DATA_DIR, 'raw', 'application58356', 'hesin_oper.tsv'),
+                 gp_event_data_path=os.path.join(DATA_DIR, 'raw', 'application58356', 'gp_clinical.tsv'),
+                 # External data (None patient sensitive)
+                 caliber_secondary_care_dict_path=os.path.join(EXTERNAL_DATA_DIR, 'caliber_secondary_care_dict.csv'),
+                 icd10_phecode=os.path.join(EXTERNAL_DATA_DIR, 'phecode_icd10.csv'),
+                 read2_phecode=os.path.join(EXTERNAL_DATA_DIR, 'read2_to_phecode.csv'),
+                 readctv3_phecode=os.path.join(EXTERNAL_DATA_DIR, 'readctv3_to_phecode.csv'),
                  verbose=True,
                  ):
-        self.patient_base_raw_path = os.path.join('raw', application, patient_base_raw_path)
+        self.patient_base_raw_path = patient_base_raw_path
         self.patient_base_basic_path = os.path.join('interim', 'patient_base_basic.csv')
-        self.event_data_path = os.path.join('raw', application, event_data_path)
-        self.diag_event_data_path = os.path.join('raw', application, diag_event_data_path)
-        self.opcs_event_data_path = os.path.join('raw', application, opcs_event_data_path)
-        self.gp_event_data_path = os.path.join('raw', application, gp_event_data_path)
+        self.event_data_path = event_data_path
+        self.diag_event_data_path = diag_event_data_path
+        self.opcs_event_data_path = opcs_event_data_path
+        self.gp_event_data_path = gp_event_data_path
+        self.caliber_secondary_care_dict_path = caliber_secondary_care_dict_path
+        self.icd10_phecode = icd10_phecode
+        self.read2_phecode = read2_phecode
+        self.readctv3_phecode = readctv3_phecode
         self.verbose = verbose
 
     def get_patient_table(self) -> pd.DataFrame:
@@ -51,9 +84,7 @@ class BiobankDataset:
         :return patient_base: A dataframe with all patient level info
         """
         # You might need to run patient_base_and_hf_cohort.py here
-        patient_base = pd.read_csv(os.path.join(DATA_DIR, self.patient_base_raw_path),
-                                   parse_dates=['dob'])
-
+        patient_base = pd.read_csv(self.patient_base_raw_path, parse_dates=['dob'])
         return patient_base
 
     def get_patient_base(self) -> pd.DataFrame:
@@ -65,9 +96,8 @@ class BiobankDataset:
         :return patient_base_basic: just whats needed for cohort matching
         """
         patient_base = self.get_patient_table()
-
         # patients must have event data to be included!
-        event_data = pd.read_csv(DATA_DIR + self.event_data_path, delimiter='\t')
+        event_data = pd.read_csv(self.event_data_path, delimiter='\t')
         patient_base = patient_base[patient_base.eid.isin(event_data.eid)]
 
         return patient_base
@@ -85,12 +115,12 @@ class BiobankDataset:
         """
         # TODO: add try with only primary
         id_vars = ['eid', 'ins_index']
-        event_data = pd.read_csv(os.path.join(DATA_DIR, self.event_data_path), delimiter='\t')
+        event_data = pd.read_csv(self.event_data_path, delimiter='\t')
         event_data = event_data.loc[:, id_vars + ['epistart']]
 
-        diag_data = pd.read_csv(os.path.join(DATA_DIR, self.diag_event_data_path), delimiter='\t')
-        opcs_data = pd.read_csv(os.path.join(DATA_DIR, self.opcs_event_data_path), delimiter='\t', encoding='latin')
-        gp_clinical = pd.read_csv(os.path.join(DATA_DIR, self.gp_event_data_path), delimiter='\t', encoding='latin')
+        diag_data = pd.read_csv(self.diag_event_data_path, delimiter='\t')
+        opcs_data = pd.read_csv(self.opcs_event_data_path, delimiter='\t', encoding='latin')
+        gp_clinical = pd.read_csv(self.gp_event_data_path, delimiter='\t', encoding='latin')
         gp_clinical.drop(columns=['data_provider', 'value1', 'value2', 'value3'], inplace=True)
 
         diag_data = pd.merge(diag_data, event_data, on=id_vars)  # diag_data = diag_data[diag_data.level != 3]
@@ -126,9 +156,8 @@ class BiobankDataset:
 
         return patient_event_data
 
-    @staticmethod
-    def caliber_convert(patient_event_data):
-        secondary_caliber = pd.read_csv(os.path.join(EXTERNAL_DATA_DIR, 'caliber_secondary_care_dict.csv'))
+    def caliber_convert(self, patient_event_data):
+        secondary_caliber = pd.read_csv(self.caliber_secondary_care_dict_path)
         icd_caliber_dict = dict([(k, v) for k, v in zip(secondary_caliber.ICD10code, secondary_caliber.Disease)])
         opcs_caliber_dict = dict([(k, v) for k, v in zip(secondary_caliber.OPCS4code, secondary_caliber.Disease)])
 
@@ -146,20 +175,19 @@ class BiobankDataset:
             patient_event_data.code_type == 'oper4'].code.map(opcs_caliber_dict)
         return patient_event_data
 
-    @staticmethod
-    def phecode_convert(patient_event_data, many_to_one=True):
-        icd_phecode = pd.read_csv(os.path.join(EXTERNAL_DATA_DIR, 'phecode_icd10.csv'))
+    def phecode_convert(self, patient_event_data, many_to_one=True):
+        icd_phecode = pd.read_csv(self.icd10_phecode)
         icd_phecode.columns = ['code', 'description', 'phecode', 'phenotype', 'exclude_range_codes', 'exclude_range']
         icd_phecode.code = icd_phecode.code.str.replace('.', '')
         icd_phecode.loc[:, 'code_type_match'] = 'diag'
         icd_phecode = icd_phecode.loc[:, ['code', 'code_type_match', 'phecode']]
 
-        read2_phecode = pd.read_csv(os.path.join(EXTERNAL_DATA_DIR, 'read2_to_phecode.csv'))
+        read2_phecode = pd.read_csv(self.read2_phecode)
         read2_phecode.columns = ['code', 'phecode']
         read2_phecode.loc[:, 'code_type_match'] = 'read_2'
         read2_phecode = read2_phecode.loc[:, ['code', 'code_type_match', 'phecode']]
 
-        read3_phecode = pd.read_csv(os.path.join(EXTERNAL_DATA_DIR, 'readctv3_to_phecode.csv'))
+        read3_phecode = pd.read_csv(self.readctv3_phecode)
         read3_phecode.columns = ['code', 'phecode']
         read3_phecode.loc[:, 'code_type_match'] = 'read_3'
         read3_phecode = read3_phecode.loc[:, ['code', 'code_type_match', 'phecode']]
@@ -230,7 +258,7 @@ class BiobankDataset:
 
     @staticmethod
     def add_unknown(patient_event_data, min_proportion=0.01, unknown_token='UNK'):
-        # TODO: add method to turn infrequent tokens into UNK tokens
+        # TODO: add method to turn infrequent tokens into UNK tokens take out of vocab func
         pass
 
     def get_phe_data(self, patient_event_data=None, reload=True):
@@ -254,7 +282,7 @@ class BiobankDataset:
         code_vocab = self.get_token_to_index_vocabulary(phe_data, indexing_col='phecode')
         return phe_data, age_vocab, code_vocab
 
-    def phe_lists(self, reload=True):
+    def phe_lists(self, with_codes, reload=True):
         if reload:
             phe_data, age_vocab, code_vocab = self.get_phe_data(reload=reload)
             save_pickle(age_vocab, os.path.join(DATA_DIR, 'processed', with_codes, 'age_vocab.pkl'))
@@ -268,84 +296,6 @@ class BiobankDataset:
             age_vocab = load_pickle(os.path.join(DATA_DIR, 'processed', with_codes, 'age_vocab.pkl'))
             code_vocab = load_pickle(os.path.join(DATA_DIR, 'processed', with_codes, 'code_vocab.pkl'))
             return phe_lists, age_vocab, code_vocab
-
-    def get_next_event_lists(self, phe_lists=None, reload=True, min_visits=5):
-        """
-        Gets a similar format to phe_lists but for next event prediction.
-
-        Input lists are randomly truncated such that max_len>keep, uniformly sampled between min_events < keep < max_len.
-
-        Sequences truncated from the start of the list
-
-        Label column is a list of unique diagnoses  in the next event
-        """
-
-        def get_last_events(x: list):
-            sep_bool = [a == SEPARATOR_TOKEN for a in x]
-            sep_idx = np.arange(len(x))[sep_bool]
-            try:
-                last_events = x[sep_idx[-2] + 1: sep_idx[-1]]  # +1 non inclusive
-            except IndexError:
-                last_events = x[:-1]
-            return list(set(last_events))
-
-        def get_visits(x):
-            return len([i for i in range(len(x)) if x[i] == SEPARATOR_TOKEN])
-
-        if reload:
-            phe_lists, _, _ = self.phe_lists(reload=True)
-
-        phe_lists.loc[:, 'max_len'] = phe_lists.phecode.apply(get_visits)
-        phe_lists = phe_lists.loc[phe_lists.max_len > min_visits, :]
-
-        # Keep only last n visits
-        phe_lists.loc[:, 'keep'] = phe_lists.max_len.apply(lambda x: np.random.randint(min_visits, x))
-        phe_lists.loc[:, 'label'] = phe_lists.phecode.copy().apply(lambda x: get_last_events(x))
-        phe_lists.loc[:, 'phecode'] = phe_lists.apply(lambda x: keep_up_to_n_visits(x=x.phecode, n=x.keep), axis=1)
-        phe_lists.loc[:, 'age'] = phe_lists.apply(lambda x: keep_up_to_n_visits(x=x.age, n=x.keep), axis=1)
-
-        phe_lists.drop(columns=['keep', 'max_len'], inplace=True)
-
-        return phe_lists
-
-    def get_n_month_lists(self, phe_lists, phe_data, n_months=6, min_events=5):
-        """
-        Gets a similar format to phe_lists but for prediction n_months before final event.
-        Buffer cuts off n months of records from the end of the prediction window
-        Input lists are randomly truncated such that max_len>keep, uniformly sampled between min_events < keep < max_len.
-        Sequences truncated from the start of the list.
-        Label column is a list of unique diagnoses  in the next event
-        """
-        phe_data = phe_data.loc[phe_data.eid.isin(phe_lists.eid), :]
-
-        store = []
-        for eid, record in list(phe_data.groupby('eid')):
-            final_visit_date = record.date.max()
-            record.loc[:, 'timedelta'] = (pd.Timestamp((final_visit_date - timedelta(
-                days=n_months))) - record.date)  # Calc time delta from buffer
-            buffer_idx = record.timedelta.dt.total_seconds() > 0
-            record_prebuffer = record.loc[buffer_idx, :]
-            record_inbuffer = record.loc[~buffer_idx, :]
-            phelist = list(record_prebuffer.phecode)
-            codelist = list(record_prebuffer.code)
-            agelist = list(record_prebuffer.age)
-
-            # randomly cut down history
-            n_events = len([x for x in phelist if x == SEPARATOR_TOKEN])
-            if min_events >= n_events:
-                continue  # skip if smaller than required
-            keep = np.random.randint(min_events, n_events)
-            phelist = keep_up_to_n_visits(phelist, keep, exclude_final=False)
-            agelist = keep_up_to_n_visits(agelist, keep, exclude_final=False)
-            codelist = keep_up_to_n_visits(codelist, keep, exclude_final=False)
-
-            label = set(record_inbuffer.phecode)
-            label.discard(SEPARATOR_TOKEN)
-            label = list(label)
-
-            store.append({'eid': eid, 'phecode': phelist, 'age': agelist, 'code': codelist, 'label': label})
-
-        return pd.DataFrame(store)
 
 
 def train_val_test(df_input, stratify_colname=None, frac_train=0.6, frac_val=0.2, frac_test=0.2):
@@ -418,15 +368,37 @@ def train_val_test(df_input, stratify_colname=None, frac_train=0.6, frac_val=0.2
     return df_train, df_val, df_test
 
 
-if __name__ == '__main__':
-    from src.data.preprocess.make_dataset import *
+@ex.automain
+def main(
+        patient_base_raw_path=os.path.join(DATA_DIR, 'raw', 'application58356', 'patient_base.csv'),
+        event_data_path=os.path.join(DATA_DIR, 'raw', 'application58356', 'hesin.tsv'),
+        diag_event_data_path=os.path.join(DATA_DIR, 'raw', 'application58356', 'hesin_diag.tsv'),
+        opcs_event_data_path=os.path.join(DATA_DIR, 'raw', 'application58356', 'hesin_oper.tsv'),
+        gp_event_data_path=os.path.join(DATA_DIR, 'raw', 'application58356', 'gp_clinical.tsv'),
+        # External data (None patient sensitive)
+        caliber_secondary_care_dict_path=os.path.join(EXTERNAL_DATA_DIR, 'caliber_secondary_care_dict.csv'),
+        icd10_phecode=os.path.join(EXTERNAL_DATA_DIR, 'phecode_icd10.csv'),
+        read2_phecode=os.path.join(EXTERNAL_DATA_DIR, 'read2_to_phecode.csv'),
+        readctv3_phecode=os.path.join(EXTERNAL_DATA_DIR, 'readctv3_to_phecode.csv'),
+        verbose=True):
     from src.omni.common import save_pickle
     from ast import literal_eval
 
     # TODO: add argparse support
     with_codes = 'phecode'  # 'phecode'
 
-    b = BiobankDataset()
+    b = BiobankDataset(
+        patient_base_raw_path,
+        event_data_path,
+        diag_event_data_path,
+        opcs_event_data_path,
+        gp_event_data_path,
+        caliber_secondary_care_dict_path,
+        icd10_phecode,
+        read2_phecode,
+        readctv3_phecode,
+        verbose
+    )
     raw_patient_table = b.get_patient_base()
     print('Raw. Total patients: {}'.format(raw_patient_table.eid.unique().shape[0]))
 
@@ -457,7 +429,7 @@ if __name__ == '__main__':
                            dtype={"phecode": 'category', "code": 'category', "age": 'category',
                                   'code_type': 'category', 'eid': 'int64', 'yob': "int16"})
 
-    phe_lists = b.get_sequences_df(phe_data, order_by=False)
+    phe_lists = b.get_sequences_df(phe_data)
     phe_lists['length'] = phe_lists['phecode'].apply(
         lambda x: len([i for i in range(len(x)) if x[i] == SEPARATOR_TOKEN]))
     phe_lists = phe_lists[phe_lists['length'] >= 5]

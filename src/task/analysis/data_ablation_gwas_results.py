@@ -10,7 +10,7 @@ import matplotlib.pyplot as plt
 from tqdm import tqdm
 
 from definitions import DATA_DIR, RESULTS_DIR
-from task.analysis.snp_assoc_catalog import merge_on_ld_and_id
+from task.analysis.snp_assoc_catalog_results import merge_on_ld_and_id
 
 from task.subset_pheno import subset_pheno
 

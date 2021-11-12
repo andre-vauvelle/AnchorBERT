@@ -25,7 +25,8 @@ from task.pheno import save_phenofile, apply_anchor, update_phenofile, anchor_de
 base = os.path.basename(__file__)
 experiment_name = os.path.splitext(base)[0]
 ex = Experiment(experiment_name)
-ex.observers.append(MongoObserver(url=MONGO_STR, db_name=MONGO_DB))
+if MONGO_DB is not None:
+    ex.observers.append(MongoObserver(url=MONGO_STR, db_name=MONGO_DB))
 ex.captured_out_filter = apply_backspaces_and_linefeeds
 
 # Hyperlipidemia 272.1, E78.5, E78.4
