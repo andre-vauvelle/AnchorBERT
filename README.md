@@ -16,7 +16,7 @@ are able to detect genomic associations only previously found in large consortiu
 reducing the number of controls available by 50%, we find our model is able to maintain 40% more significant genomic
 associations from the GWAS catalog compared to standard phenotype definitions.
 
-![visual_abstract](./master/visual_abstract.png)
+![visual_abstract](../master/visual_abstract.png)
 
 ## Requirements and Data preprocessing
 
